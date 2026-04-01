@@ -1,0 +1,4 @@
+PyQt6>=6.5
+astropy>=5.3
+numpy>=1.24
+sep>=1.2
