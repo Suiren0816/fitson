@@ -1,105 +1,92 @@
 # AstroView
 
-Current status: skeleton window runnable.
+A desktop FITS astronomical image viewer built with PySide6.
 
-The application can be launched with `python -m astroview` (or `python main.py`).
-The empty window displays menus, toolbar, dock panels, and status bar, but file-open
-and all business logic remain unimplemented.
+## Features
 
-Qt toolkit: **PySide6** (via conda-forge `qt6-main` + `pyside6`).
+### Image Display
+- Open single or multiple FITS files with multi-HDU support
+- Stretch modes: Linear, Log, Asinh, Sqrt
+- Interval modes: ZScale, MinMax, 99.5%, 99%, 98%, 95%
+- Mouse wheel zoom and left-click drag for panning
+- Fit-to-window and actual-pixels (100%) view options
 
-This directory follows the Phase 1 design document and currently contains:
+### Source Extraction (SEP)
+- Built-in SEP (Source Extractor Python) integration as an optional tool
+- Full-image or ROI (right-click drag) source extraction
+- Configurable extraction parameters (threshold, min area, deblend, etc.)
+- Source overlay ellipses on the canvas with click-to-highlight
+- Source catalog table with sortable columns
+- Export catalog to CSV
 
-- UI layer modules for the main window, canvas, source table, header dialog, SEP panel, and status bar.
-- Core layer modules for FITS data, FITS service, SEP service, and source catalog.
-- Placeholder tests and dependency definitions.
+### Coordinate Markers
+- Draw circle markers on the image at specified coordinates
+- Supports both pixel (x, y) and WCS (RA, Dec) coordinate input
+- Single-coordinate add or batch input (one per line)
+- Configurable radius, line width, and color
 
-## Interface notes
+### Multi-Frame Playback
+- Open multiple FITS files as an ordered frame sequence
+- Append additional frames to an existing sequence
+- Frame player dock with play/pause, FPS control, and loop/bounce modes
+- Keyboard shortcuts: `[` previous frame, `]` next frame
 
-The codebase is currently organized around typed contracts rather than behavior:
+### Status Bar
+- Real-time pixel coordinates and value under the cursor
+- WCS RA/Dec display (when WCS is available)
+- Current zoom level
+- Frame counter for multi-frame sequences
 
-- `core/contracts.py` defines request/state/result objects shared across modules.
-- `MainWindow` is the only coordinator allowed to call both UI modules and core services.
-- View modules emit signals or expose passive setters; they do not call services directly.
-- Service modules return domain or render objects; they do not manipulate widgets directly.
+### Header Viewer
+- Full FITS header display in a searchable dialog
+- Keyword filter for quick lookup
 
-## Planned call flow
+### Performance
+- Memory-mapped FITS loading (`memmap=True`) for large files
+- Deferred type conversion — avoids unnecessary float32 copy at load time
+- Subsampled interval calculation for large images (stride to ~1000x1000)
+- Lazy frame rendering with dirty flags — only the visible frame is rendered
 
-Open file flow:
-- `main.py` builds an `OpenFileRequest`.
-- `MainWindow.open_file_from_request()` forwards to `MainWindow.open_file()`.
-- `MainWindow.open_file()` calls `FITSService.open_file()` and then `refresh_image()`.
-- `MainWindow.refresh_image()` calls `FITSService.render()` and pushes the result into `ImageCanvas`.
+## Requirements
 
-ROI extraction flow:
-- `ImageCanvas` emits `roi_selected(x0, y0, width, height)`.
-- `MainWindow.handle_roi_selected()` builds an `ROISelection`.
-- `MainWindow` slices the image data and calls `SEPService.extract_from_roi()`.
-- `MainWindow` forwards the returned `SourceCatalog` to `ImageCanvas` and `SourceTableDock`.
+- Python 3.10+
+- PySide6
+- astropy
+- numpy
+- sep (optional, for source extraction)
 
-Cursor/status flow:
-- `ImageCanvas` emits `mouse_moved(x, y)`.
-- `MainWindow.update_status_from_cursor()` asks `FITSData` for a `PixelSample`.
-- `MainWindow` forwards the sample to `AppStatusBar`.
+Recommended install via conda-forge:
+```
+conda install pyside6 astropy numpy sep
+```
 
-## MainWindow assembly plan
+## Usage
 
-Window bootstrap order:
-- `MainWindow.initialize()`
-- `configure_window_shell()`
-- `build_ui()`
-- `create_actions()`
-- `connect_signals()`
-- `apply_startup_request()`
+Run from the parent directory of `astroview/`:
 
-UI assembly responsibilities:
-- `build_central_canvas()` owns the central `ImageCanvas`.
-- `build_docks()` owns `SourceTableDock` and `SEPParamsPanel`.
-- `build_status_bar()` owns `AppStatusBar`.
-- `build_menu_bar()` organizes File/View/Tools/Help menus.
-- `build_tool_bar()` organizes file/view actions plus stretch and interval controls.
+```bash
+python -m astroview                     # launch with empty window
+python -m astroview path/to/image.fits  # open a FITS file directly
+python -m astroview image.fits --hdu 1  # open a specific HDU
+```
 
-Signal binding responsibilities:
-- `bind_canvas_signals()` connects cursor, ROI, and zoom events.
-- `bind_source_table_signals()` connects row selection events.
-- `bind_sep_panel_signals()` connects parameter changes.
-- `bind_toolbar_signals()` connects render controls.
-- `bind_action_triggers()` connects menu/toolbar actions to controller methods.
+## Architecture
 
-## UI module contracts
+- **`core/`** — domain logic (no Qt dependency)
+  - `fits_data.py` — FITS loading, WCS, pixel sampling
+  - `fits_service.py` — rendering pipeline (stretch/interval/normalization)
+  - `sep_service.py` — SEP source extraction wrapper
+  - `source_catalog.py` — source catalog data model
+  - `contracts.py` — typed dataclasses shared across layers
 
-Canvas contract:
-- `ImageCanvas` owns `CanvasImageState`, `CanvasOverlayState`, and `ZoomState`.
-- The window coordinator pushes image and overlay state into the canvas.
-- The canvas emits primitive Qt signals, but can also accept structured `ROISelection` and `ZoomState`.
+- **`app/`** — PySide6 UI layer
+  - `main_window.py` — central coordinator between UI and services
+  - `canvas.py` — QGraphicsView-based image display with overlays
+  - `sep_panel.py` — SEP parameter form
+  - `source_table.py` — source catalog table dock
+  - `marker_dock.py` — coordinate marker input dock
+  - `frame_player_dock.py` — multi-frame playback controls
+  - `header_dialog.py` — FITS header viewer dialog
+  - `status_bar.py` — cursor/zoom/frame status display
 
-Source table contract:
-- `SourceTableDock` owns `TableColumnSpec`, `TableRowViewModel`, and `TableSelectionState`.
-- Column definitions are configured once during assembly.
-- Row view models are supplied by `MainWindow`, not built inside the table.
-
-SEP panel contract:
-- `SEPParamsPanel` owns `SEPFieldSpec` metadata and a typed `SEPParameters` object.
-- Field specs define labels, control kinds, defaults, and limits.
-- The panel emits typed parameter state but does not invoke `SEPService`.
-
-Header dialog contract:
-- `HeaderDialog` owns `HeaderFilterState`.
-- Raw header text is pushed in by `MainWindow`.
-- Search/filter state stays local to the dialog.
-
-Status bar contract:
-- `AppStatusBar` receives `PixelSample` and `ZoomState`.
-- It acts as a passive sink for coordinator-provided state.
-
-## Empty and disabled states
-
-The UI contract now treats empty/error/disabled state as explicit data:
-
-- `ViewFeedbackState` is the common payload for empty, ready, disabled, and error feedback.
-- `ControlEnablementState` carries enabled/disabled state plus the reason text.
-- `TableViewState`, `HeaderViewState`, and `SEPPanelState` wrap module-specific state with feedback.
-- `RenderControlState` includes `disabled_reason` so toolbar controls can reflect why they are inactive.
-- `MainWindow` is responsible for building these states through helper methods such as
-  `build_empty_image_feedback()`, `build_empty_catalog_feedback()`, `build_no_header_feedback()`,
-  `build_disabled_sep_feedback()`, and `build_error_feedback()`.
+`MainWindow` is the sole coordinator — view modules emit signals and expose setters but never call services directly. Service modules return domain objects but never touch widgets.

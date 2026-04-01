@@ -87,6 +87,7 @@ class MainWindow(QMainWindow):
         from ..core.fits_data import FITSData
         self._frames: list[FITSData] = []
         self._frame_images: list[QImage | None] = []
+        self._frame_dirty: list[bool] = []
         self._current_frame_index: int = 0
 
     def initialize(self) -> None:
@@ -334,6 +335,11 @@ class MainWindow(QMainWindow):
         self.action_zoom_out = QAction("Zoom Out", self)
         self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
 
+        self.action_prev_frame = QAction("Previous Frame", self)
+        self.action_prev_frame.setShortcut("Left")
+        self.action_next_frame = QAction("Next Frame", self)
+        self.action_next_frame.setShortcut("Right")
+
     def create_tool_actions(self) -> None:
         """Define tool-oriented actions and non-action controls.
 
@@ -405,6 +411,10 @@ class MainWindow(QMainWindow):
             self.action_zoom_in.triggered.connect(self.canvas.zoom_in)
         if self.action_zoom_out is not None and self.canvas is not None:
             self.action_zoom_out.triggered.connect(self.canvas.zoom_out)
+        if self.action_prev_frame is not None:
+            self.action_prev_frame.triggered.connect(self._go_prev_frame)
+        if self.action_next_frame is not None:
+            self.action_next_frame.triggered.connect(self._go_next_frame)
         if self.action_run_sep is not None:
             self.action_run_sep.triggered.connect(self.run_sep_extract)
         if self.action_show_markers is not None:
@@ -448,13 +458,15 @@ class MainWindow(QMainWindow):
 
         self._frames.clear()
         self._frame_images.clear()
+        self._frame_dirty.clear()
         self._current_frame_index = 0
 
         for p in paths:
             try:
                 data = FITSData.load(p, hdu_index)
                 self._frames.append(data)
-                self._frame_images.append(self._render_frame(data))
+                self._frame_images.append(None)
+                self._frame_dirty.append(True)
             except Exception as e:
                 self.show_error("Open failed", f"{p}: {e}")
 
@@ -481,6 +493,7 @@ class MainWindow(QMainWindow):
         self.current_catalog = None
         self._frames.clear()
         self._frame_images.clear()
+        self._frame_dirty.clear()
         self._current_frame_index = 0
         self.setWindowTitle("AstroView")
 
@@ -737,13 +750,40 @@ class MainWindow(QMainWindow):
             self.marker_dock.show()
             self.marker_dock.raise_()
 
-    def _apply_markers(self, coords: list) -> None:
-        """Draw markers on the canvas from the marker dock."""
+    def _apply_markers(self, entries: list) -> None:
+        """Draw markers on the canvas. Converts WCS entries to pixel coords."""
 
         if self.canvas is None or self.marker_dock is None:
             return
+
+        pixel_coords: list[tuple[float, float]] = []
+        data = self.fits_service.current_data
+        wcs = data.wcs if data is not None and data.has_wcs else None
+
+        for entry in entries:
+            if len(entry) == 3:
+                coord_type, v1, v2 = entry
+            else:
+                coord_type, v1, v2 = "pixel", entry[0], entry[1]
+
+            if coord_type == "wcs":
+                if wcs is None:
+                    self.show_error("Markers", "No WCS available for coordinate conversion.")
+                    return
+                try:
+                    from astropy.coordinates import SkyCoord
+                    import astropy.units as u
+                    sky = SkyCoord(ra=v1 * u.deg, dec=v2 * u.deg)
+                    px, py = wcs.world_to_pixel(sky)
+                    pixel_coords.append((float(px), float(py)))
+                except Exception as e:
+                    self.show_error("Markers", f"WCS conversion failed: {e}")
+                    return
+            else:
+                pixel_coords.append((v1, v2))
+
         self.canvas.set_markers(
-            coords,
+            pixel_coords,
             radius=self.marker_dock.radius(),
             color=self.marker_dock.color(),
             line_width=self.marker_dock.line_width(),
@@ -943,10 +983,21 @@ class MainWindow(QMainWindow):
         return qimage.copy()
 
     def _rerender_all_frames(self) -> None:
-        """Re-render all cached frame images with current stretch/interval."""
+        """Mark all frames dirty and re-render only the current frame."""
 
-        for i, frame_data in enumerate(self._frames):
-            self._frame_images[i] = self._render_frame(frame_data)
+        for i in range(len(self._frames)):
+            self._frame_dirty[i] = True
+        self._ensure_frame_rendered(self._current_frame_index)
+
+    def _ensure_frame_rendered(self, index: int) -> None:
+        """Render frame at index if it is marked dirty."""
+
+        if index < 0 or index >= len(self._frames):
+            return
+        if not self._frame_dirty[index]:
+            return
+        self._frame_images[index] = self._render_frame(self._frames[index])
+        self._frame_dirty[index] = False
         if self._frames:
             self.fits_service.current_data = self._frames[self._current_frame_index]
 
@@ -957,6 +1008,7 @@ class MainWindow(QMainWindow):
             return
 
         self._current_frame_index = index
+        self._ensure_frame_rendered(index)
         data = self._frames[index]
         self.fits_service.current_data = data
         self.current_catalog = None
@@ -978,7 +1030,7 @@ class MainWindow(QMainWindow):
                 self.canvas.centerOn(self.canvas._pixmap_item)
 
         if self.app_status_bar is not None:
-            self.app_status_bar.clear_data()
+            self.app_status_bar.set_frame_info(index, len(self._frames))
 
     def _show_current_frame_image(self) -> None:
         """Push the cached QImage for the current frame into the canvas."""
@@ -1027,7 +1079,8 @@ class MainWindow(QMainWindow):
             try:
                 data = FITSData.load(p)
                 self._frames.append(data)
-                self._frame_images.append(self._render_frame(data))
+                self._frame_images.append(None)
+                self._frame_dirty.append(True)
             except Exception as e:
                 self.show_error("Append failed", f"{p}: {e}")
 
@@ -1035,3 +1088,11 @@ class MainWindow(QMainWindow):
             self.fits_service.current_data = self._frames[self._current_frame_index]
 
         self._sync_frame_player()
+
+    def _go_prev_frame(self) -> None:
+        if len(self._frames) > 1 and self._current_frame_index > 0:
+            self._switch_frame(self._current_frame_index - 1)
+
+    def _go_next_frame(self) -> None:
+        if len(self._frames) > 1 and self._current_frame_index < len(self._frames) - 1:
+            self._switch_frame(self._current_frame_index + 1)

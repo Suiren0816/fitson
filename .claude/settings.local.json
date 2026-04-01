@@ -7,7 +7,11 @@
       "Bash(conda run:*)",
       "Bash(find D:/workspace/fitson/astroview -type d -name __pycache__ -exec rm -rf {} +)",
       "Read(//d/workspace/fitson/**)",
-      "Bash(find astroview:*)"
+      "Bash(find astroview:*)",
+      "Bash(timeout 5 python -m astroview)",
+      "Bash(echo \"EXIT: $?\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''astroview/app/main_window.py''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''astroview/app/main_window.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''Syntax OK''\\)\")"
     ]
   }
 }

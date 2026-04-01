@@ -22,11 +22,13 @@ class AppStatusBar(QStatusBar):
         self.pixel_label = QLabel("Pixel: (-, -)", self)
         self.value_label = QLabel("Value: -", self)
         self.world_label = QLabel("RA/Dec: - / -", self)
+        self.frame_label = QLabel("", self)
         self.zoom_label = QLabel("Zoom: 100%", self)
 
         self.addPermanentWidget(self.pixel_label)
         self.addPermanentWidget(self.value_label)
         self.addPermanentWidget(self.world_label, 1)
+        self.addPermanentWidget(self.frame_label)
         self.addPermanentWidget(self.zoom_label)
 
     def set_pixel_info(self, x: int | None, y: int | None, value: float | None) -> None:
@@ -72,6 +74,14 @@ class AppStatusBar(QStatusBar):
             "zoom_state": self.last_zoom_state,
         }
 
+    def set_frame_info(self, current: int, total: int) -> None:
+        """Update frame counter display."""
+
+        if total <= 1:
+            self.frame_label.setText("")
+        else:
+            self.frame_label.setText(f"Frame: {current + 1}/{total}")
+
     def clear_data(self) -> None:
         """Reset all displayed status values."""
 
@@ -80,3 +90,4 @@ class AppStatusBar(QStatusBar):
         self.set_pixel_info(None, None, None)
         self.set_world_info(None, None)
         self.set_zoom_info(1.0)
+        self.frame_label.setText("")

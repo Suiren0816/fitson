@@ -106,15 +106,24 @@ class FITSService:
         interval = _build_interval(request.interval_name)
         stretch = _build_stretch(request.stretch_name)
 
-        vmin, vmax = interval.get_limits(data)
-        clipped = np.clip(data, vmin, vmax)
-        if vmax > vmin:
-            normalized = (clipped - vmin) / (vmax - vmin)
-        else:
-            normalized = np.zeros_like(clipped)
+        # Subsample for interval calculation on large images
+        sample = _subsample(data)
+        vmin, vmax = interval.get_limits(sample)
 
-        stretched = stretch(normalized)
-        image_u8 = (stretched * 255).astype(np.uint8)
+        # In-place pipeline to minimize allocations
+        fdata = data.astype(np.float32, copy=True)
+        np.clip(fdata, vmin, vmax, out=fdata)
+        if vmax > vmin:
+            fdata -= vmin
+            fdata /= (vmax - vmin)
+        else:
+            fdata[:] = 0
+
+        stretched = stretch(fdata)
+        if stretched is not fdata:
+            fdata = stretched
+        np.multiply(fdata, 255, out=fdata)
+        image_u8 = fdata.astype(np.uint8)
 
         return RenderResult(image_u8=image_u8, width=w, height=h)
 
@@ -180,3 +189,17 @@ class _PercentileInterval:
     def get_limits(self, data: np.ndarray) -> tuple[float, float]:
         vmin, vmax = np.nanpercentile(data, [self._lo, self._hi])
         return float(vmin), float(vmax)
+
+
+_SUBSAMPLE_MAX = 1000
+
+
+def _subsample(data: np.ndarray, max_size: int = _SUBSAMPLE_MAX) -> np.ndarray:
+    """Return a strided subsample for fast interval estimation."""
+
+    h, w = data.shape[:2]
+    if h <= max_size and w <= max_size:
+        return data
+    step_y = max(1, h // max_size)
+    step_x = max(1, w // max_size)
+    return data[::step_y, ::step_x]

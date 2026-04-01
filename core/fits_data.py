@@ -62,7 +62,9 @@ class FITSData:
         header = hdu.header
         data = hdu.data
         if data is not None:
-            data = np.asarray(data, dtype=np.float32)
+            data = np.asarray(data)
+            if not data.dtype.isnative:
+                data = data.astype(data.dtype.newbyteorder("="))
 
         try:
             wcs = WCS(header)

@@ -6,6 +6,7 @@ from PySide6.QtCore import Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QColorDialog,
+    QComboBox,
     QDockWidget,
     QDoubleSpinBox,
     QFormLayout,
@@ -74,15 +75,22 @@ class MarkerDock(QDockWidget):
         add_group = QGroupBox("Add Coordinate", content)
         add_form = QFormLayout(add_group)
 
+        self.coord_type = QComboBox(add_group)
+        self.coord_type.addItems(["Pixel (x, y)", "WCS (ra, dec)"])
+        self.coord_type.currentIndexChanged.connect(self._on_coord_type_changed)
+        add_form.addRow("Type:", self.coord_type)
+
+        self.x_label = QLabel("X:")
         self.x_spin = QDoubleSpinBox(add_group)
         self.x_spin.setRange(-1e6, 1e6)
-        self.x_spin.setDecimals(2)
-        add_form.addRow("X:", self.x_spin)
+        self.x_spin.setDecimals(6)
+        add_form.addRow(self.x_label, self.x_spin)
 
+        self.y_label = QLabel("Y:")
         self.y_spin = QDoubleSpinBox(add_group)
         self.y_spin.setRange(-1e6, 1e6)
-        self.y_spin.setDecimals(2)
-        add_form.addRow("Y:", self.y_spin)
+        self.y_spin.setDecimals(6)
+        add_form.addRow(self.y_label, self.y_spin)
 
         add_btn_row = QWidget(add_group)
         add_btn_layout = QHBoxLayout(add_btn_row)
@@ -103,10 +111,12 @@ class MarkerDock(QDockWidget):
 
         self.coord_input = QPlainTextEdit(content)
         self.coord_input.setPlaceholderText(
-            "# Example:\n"
+            "# Pixel: x, y\n"
             "512, 512\n"
             "100.5, 200.3\n"
-            "800, 600"
+            "# WCS: ra, dec (degrees)\n"
+            "w 180.0, 45.0\n"
+            "w 179.5, 44.8"
         )
         layout.addWidget(self.coord_input)
 
@@ -137,31 +147,39 @@ class MarkerDock(QDockWidget):
     def line_width(self) -> int:
         return self.line_width_spin.value()
 
-    def parse_coordinates(self) -> list[tuple[float, float]]:
-        """Parse the text input into a list of (x, y) tuples."""
+    def parse_coordinates(self) -> list[tuple[str, float, float]]:
+        """Parse text input into (type, v1, v2) tuples.
 
-        coords: list[tuple[float, float]] = []
+        Returns ('pixel', x, y) or ('wcs', ra, dec) per line.
+        Lines prefixed with 'w ' are WCS; otherwise pixel.
+        """
+
+        coords: list[tuple[str, float, float]] = []
         for line in self.coord_input.toPlainText().splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
+            coord_type = "pixel"
+            if line.lower().startswith("w "):
+                coord_type = "wcs"
+                line = line[2:].strip()
             parts = line.split(",")
             if len(parts) != 2:
                 continue
             try:
-                x, y = float(parts[0].strip()), float(parts[1].strip())
-                coords.append((x, y))
+                v1, v2 = float(parts[0].strip()), float(parts[1].strip())
+                coords.append((coord_type, v1, v2))
             except ValueError:
                 continue
         return coords
 
     def _on_apply(self) -> None:
-        coords = self.parse_coordinates()
-        if not coords:
+        entries = self.parse_coordinates()
+        if not entries:
             self.status_label.setText("No valid coordinates found.")
             return
-        self.status_label.setText(f"{len(coords)} marker(s)")
-        self.markers_updated.emit(coords)
+        self.status_label.setText(f"{len(entries)} marker(s)")
+        self.markers_updated.emit(entries)
 
     def _on_add_single(self) -> None:
         self._append_current_xy()
@@ -171,18 +189,31 @@ class MarkerDock(QDockWidget):
         self._on_apply()
 
     def _append_current_xy(self) -> None:
-        x = self.x_spin.value()
-        y = self.y_spin.value()
-        text = self.coord_input.toPlainText()
-        line = f"{x}, {y}"
-        if text and not text.endswith("\n"):
-            line = "\n" + line
+        v1 = self.x_spin.value()
+        v2 = self.y_spin.value()
+        is_wcs = self.coord_type.currentIndex() == 1
+        if is_wcs:
+            line = f"w {v1}, {v2}"
+        else:
+            line = f"{v1}, {v2}"
         self.coord_input.appendPlainText(line)
 
     def _on_clear(self) -> None:
         self.coord_input.clear()
         self.markers_updated.emit([])
         self.status_label.setText("Cleared.")
+
+    def _on_coord_type_changed(self, index: int) -> None:
+        if index == 1:
+            self.x_label.setText("RA (deg):")
+            self.y_label.setText("Dec (deg):")
+            self.x_spin.setRange(-360, 360)
+            self.y_spin.setRange(-90, 90)
+        else:
+            self.x_label.setText("X:")
+            self.y_label.setText("Y:")
+            self.x_spin.setRange(-1e6, 1e6)
+            self.y_spin.setRange(-1e6, 1e6)
 
     def _pick_color(self) -> None:
         color = QColorDialog.getColor(self._color, self, "Marker Color")
