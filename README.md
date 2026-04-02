@@ -96,4 +96,4 @@ python -m astroview image.fits --hdu 1  # open a specific HDU
 
 - The initial project framing and high-level structure were shaped with GPT-5.4.
 - The framework implementation and most feature work were then carried out with Claude Opus 4.6.
-- Remaining implementation details and later refinements were completed with GPT-5.4.
+- Remaining implementation details, compatibility fixes, packaging work, and later refinements were completed with GPT-5.4.
