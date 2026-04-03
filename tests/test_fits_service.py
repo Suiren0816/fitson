@@ -6,7 +6,7 @@ from unittest.mock import patch
 import numpy as np
 
 from core.fits_data import FITSData
-from core.fits_service import FITSService, _subsample, render_preview_u8
+from core.fits_service import FITSService, _OriginalInterval, _subsample, render_preview_u8
 
 
 class _IdentityStretch:
@@ -44,6 +44,11 @@ class TestFITSService(unittest.TestCase):
 
         self.assertEqual(request.stretch_name, "Asinh")
         self.assertEqual(request.interval_name, "99%")
+
+    def test_available_intervals_include_original(self) -> None:
+        service = FITSService()
+
+        self.assertIn("Original", service.AVAILABLE_INTERVALS)
 
     def test_render_returns_empty_result_when_no_image_is_loaded(self) -> None:
         service = FITSService()
@@ -111,6 +116,14 @@ class TestFITSService(unittest.TestCase):
 
         self.assertEqual(sample.shape, (1_000, 1_500))
         self.assertTrue(np.array_equal(sample, data[::2, ::1]))
+
+    def test_original_interval_uses_true_full_image_limits(self) -> None:
+        interval = _OriginalInterval()
+        data = np.array([[100.0, 5.0], [10.0, -3.0]], dtype=np.float32)
+
+        vmin, vmax = interval.get_limits(data)
+
+        self.assertEqual((vmin, vmax), (-3.0, 100.0))
 
 
 if __name__ == "__main__":

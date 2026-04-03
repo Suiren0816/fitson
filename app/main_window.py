@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
             self.action_append_frames.triggered.connect(self._append_frames)
         if self.marker_dock is not None:
             self.marker_dock.markers_updated.connect(self._apply_markers)
+            self.marker_dock.color_changed.connect(self._handle_marker_color_changed)
         if self.frame_player_dock is not None:
             self.frame_player_dock.frame_changed.connect(self._switch_frame)
 
@@ -794,6 +795,7 @@ class MainWindow(QMainWindow):
         if self.frame_player_dock is not None:
             self.frame_player_dock.set_frame_count(0)
             self.frame_player_dock.hide()
+        self.sync_sep_panel_state()
         self.sync_render_controls()
 
     def refresh_image(self) -> None:
@@ -821,11 +823,16 @@ class MainWindow(QMainWindow):
         if self.header_dialog is not None:
             self.header_dialog.clear()
             self.header_dialog.set_view_state(self.build_header_view_state())
-        if self.sep_panel is not None:
-            self.sep_panel.set_panel_state(self.build_sep_panel_state())
+        self.sync_sep_panel_state()
         if self.app_status_bar is not None:
             self.app_status_bar.clear_data()
         self.sync_render_controls()
+
+    def sync_sep_panel_state(self) -> None:
+        """Push current enablement/feedback state into the SEP parameter panel."""
+
+        if self.sep_panel is not None:
+            self.sep_panel.set_panel_state(self.build_sep_panel_state())
 
     def sync_render_controls(self) -> None:
         """Push service-side render configuration into toolbar controls."""
@@ -1091,6 +1098,12 @@ class MainWindow(QMainWindow):
             line_width=self.marker_dock.line_width(),
         )
 
+    def _handle_marker_color_changed(self, color: Any) -> None:
+        """Keep ROI selection color aligned with the marker color."""
+
+        if self.canvas is not None:
+            self.canvas.set_roi_color(color)
+
     def reset_view_state(self) -> None:
         """Clear image, overlays, table state, dialog state, and status labels."""
 
@@ -1198,7 +1211,8 @@ class MainWindow(QMainWindow):
         - do not trigger extraction automatically
         """
 
-        _ = params
+        if params is not None:
+            self.sep_service.params = params
 
     def update_status_from_cursor(self, x: float, y: float) -> None:
         """Update status-bar information from the current cursor position.
@@ -1338,6 +1352,7 @@ class MainWindow(QMainWindow):
         if self.app_status_bar is not None:
             self.app_status_bar.set_frame_info(index, len(self._frames))
 
+        self.sync_sep_panel_state()
         self._ensure_frame_rendered(index)
 
     def _show_current_frame_image(self) -> None:

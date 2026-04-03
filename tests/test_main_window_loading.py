@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, Mock, patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QApplication
 
 import sys
@@ -18,6 +19,7 @@ if str(REPO_PARENT) not in sys.path:
 
 from astroview.app.contracts import TableColumnSpec
 from astroview.app.main_window import MainWindow
+from astroview.core.sep_service import SEPParameters
 from astroview.core.fits_data import FITSData
 from astroview.core.source_catalog import SourceCatalog, SourceRecord
 
@@ -251,6 +253,42 @@ class TestMainWindowLoading(unittest.TestCase):
                 window.export_catalog()
 
             window.current_catalog.to_csv.assert_called_once_with("catalog.csv", columns=["ID", "Flux"])
+        finally:
+            window.deleteLater()
+
+    def test_handle_marker_color_changed_updates_canvas_roi_color(self) -> None:
+        window = MainWindow()
+        window.canvas = Mock()
+        try:
+            window._handle_marker_color_changed(QColor("#00ff00"))
+
+            window.canvas.set_roi_color.assert_called_once()
+            self.assertEqual(window.canvas.set_roi_color.call_args.args[0].name(), "#00ff00")
+        finally:
+            window.deleteLater()
+
+    def test_activate_frame_enables_sep_panel(self) -> None:
+        window = MainWindow()
+        window._frames = [FITSData(path="first.fits")]
+        window._frame_images = [None]
+        window._frame_dirty = [False]
+        window.sep_panel = Mock()
+        try:
+            window._activate_frame(0)
+
+            window.sep_panel.set_panel_state.assert_called_once()
+            state = window.sep_panel.set_panel_state.call_args.args[0]
+            self.assertTrue(state.enablement.enabled)
+        finally:
+            window.deleteLater()
+
+    def test_handle_sep_params_changed_updates_service_defaults(self) -> None:
+        window = MainWindow()
+        params = SEPParameters(thresh=7.5, minarea=12)
+        try:
+            window.handle_sep_params_changed(params)
+
+            self.assertEqual(window.sep_service.params, params)
         finally:
             window.deleteLater()
 

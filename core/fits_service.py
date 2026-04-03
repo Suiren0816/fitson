@@ -7,7 +7,6 @@ from astropy.visualization import (
     AsinhStretch,
     LinearStretch,
     LogStretch,
-    ManualInterval,
     MinMaxInterval,
     SqrtStretch,
     ZScaleInterval,
@@ -27,7 +26,7 @@ class FITSService:
     """
 
     AVAILABLE_STRETCHES = ("Linear", "Log", "Asinh", "Sqrt")
-    AVAILABLE_INTERVALS = ("ZScale", "MinMax", "99.5%", "99%", "98%", "95%")
+    AVAILABLE_INTERVALS = ("ZScale", "MinMax", "Original", "99.5%", "99%", "98%", "95%")
 
     def __init__(self) -> None:
         self.current_data: FITSData | None = None
@@ -106,8 +105,8 @@ class FITSService:
         interval = _build_interval(request.interval_name)
         stretch = _build_stretch(request.stretch_name)
 
-        # Subsample for interval calculation on large images
-        sample = _subsample(data)
+        # Keep "Original" on the full image; other interval modes can subsample large data.
+        sample = data if request.interval_name == "Original" else _subsample(data)
         vmin, vmax = interval.get_limits(sample)
 
         # In-place pipeline to minimize allocations
@@ -208,11 +207,13 @@ def _build_interval(name: str) -> Any:
         return ZScaleInterval()
     if name == "MinMax":
         return MinMaxInterval()
+    if name == "Original":
+        return _OriginalInterval()
     if name in _PERCENTILE_INTERVALS:
         pct = _PERCENTILE_INTERVALS[name]
         lo = (100.0 - pct) / 2.0
         hi = 100.0 - lo
-        return ManualInterval(*np.percentile([], [lo, hi])) if False else _PercentileInterval(pct)
+        return _PercentileInterval(pct)
     return ZScaleInterval()
 
 
@@ -225,6 +226,15 @@ class _PercentileInterval:
 
     def get_limits(self, data: np.ndarray) -> tuple[float, float]:
         vmin, vmax = np.nanpercentile(data, [self._lo, self._hi])
+        return float(vmin), float(vmax)
+
+
+class _OriginalInterval:
+    """Use the full image's real numeric range without percentile clipping."""
+
+    def get_limits(self, data: np.ndarray) -> tuple[float, float]:
+        vmin = np.nanmin(data)
+        vmax = np.nanmax(data)
         return float(vmin), float(vmax)
 
 
