@@ -1,4 +1,4 @@
-# AstroView [English](README.md) | [简体中文](README_CN.md)
+﻿# AstroView [English](README.md) | [简体中文](README_CN.md)
 
 A desktop FITS astronomical image viewer built with PySide6.
 
@@ -36,6 +36,7 @@ A desktop FITS astronomical image viewer built with PySide6.
 - WCS RA/Dec display (when WCS is available)
 - Current zoom level
 - Frame counter for multi-frame sequences
+- File-loading progress messages during background FITS import
 
 ### Header Viewer
 - Full FITS header display in a searchable dialog
@@ -43,9 +44,11 @@ A desktop FITS astronomical image viewer built with PySide6.
 
 ### Performance
 - Memory-mapped FITS loading (`memmap=True`) for large files
-- Deferred type conversion — avoids unnecessary float32 copy at load time
+- Deferred type conversion avoids unnecessary float32 copy at load time
 - Subsampled interval calculation for large images (stride to ~1000x1000)
-- Lazy frame rendering with dirty flags — only the visible frame is rendered
+- Background multi-file FITS loading keeps the UI responsive during large imports
+- Progressive first-frame preview rendering for faster time-to-first-image
+- Background dirty-frame rendering to avoid blocking when switching frames
 
 ## Requirements
 
@@ -56,13 +59,13 @@ A desktop FITS astronomical image viewer built with PySide6.
 - sep (optional, for source extraction)
 
 Recommended install via conda-forge:
-```
+```bash
 conda install pyside6 astropy numpy sep
 ```
 
 ## Usage
 
-Run from the parent directory of `astroview/`:
+You can launch AstroView from either the parent directory of `astroview/` or from the repository root itself:
 
 ```bash
 python -m astroview                     # launch with empty window
@@ -70,31 +73,55 @@ python -m astroview path/to/image.fits  # open a FITS file directly
 python -m astroview image.fits --hdu 1  # open a specific HDU
 ```
 
+## Testing
+
+The project test baseline is expected to run in the conda `astro` environment.
+
+One-click runners:
+```powershell
+.\tests\run_tests.bat
+.\tests\run_tests.ps1
+```
+
+Direct unittest run:
+```powershell
+& 'D:\Miniforge\envs\astro\python.exe' -m unittest discover -s tests -v
+```
+
 ## Architecture
 
-- **`core/`** — domain logic (no Qt dependency)
-  - `fits_data.py` — FITS loading, WCS, pixel sampling
-  - `fits_service.py` — rendering pipeline (stretch/interval/normalization)
-  - `sep_service.py` — SEP source extraction wrapper
-  - `source_catalog.py` — source catalog data model
-  - `contracts.py` — typed dataclasses shared across layers
+- **`core/`**: domain logic (no Qt dependency)
+  - `fits_data.py`: FITS loading, WCS, pixel sampling
+  - `fits_service.py`: rendering pipeline, preview render helpers, normalization
+  - `sep_service.py`: SEP source extraction wrapper
+  - `source_catalog.py`: source catalog data model
+  - `contracts.py`: typed dataclasses shared across layers
 
-- **`app/`** — PySide6 UI layer
-  - `main_window.py` — central coordinator between UI and services
-  - `canvas.py` — QGraphicsView-based image display with overlays
-  - `sep_panel.py` — SEP parameter form
-  - `source_table.py` — source catalog table dock
-  - `marker_dock.py` — coordinate marker input dock
-  - `frame_player_dock.py` — multi-frame playback controls
-  - `header_dialog.py` — FITS header viewer dialog
-  - `status_bar.py` — cursor/zoom/frame status display
+- **`app/`**: PySide6 UI layer
+  - `main_window.py`: central coordinator between UI and services
+  - `canvas.py`: QGraphicsView-based image display with overlays
+  - `file_load_worker.py`: background FITS file loading worker
+  - `frame_render_worker.py`: background frame rendering worker
+  - `sep_panel.py`: SEP parameter form
+  - `source_table.py`: source catalog table dock
+  - `marker_dock.py`: coordinate marker input dock
+  - `frame_player_dock.py`: multi-frame playback controls
+  - `header_dialog.py`: FITS header viewer dialog
+  - `status_bar.py`: cursor/zoom/frame status display
 
-`MainWindow` is the sole coordinator — view modules emit signals and expose setters but never call services directly. Service modules return domain objects but never touch widgets.
+`MainWindow` is the sole coordinator: view modules emit signals and expose setters but never call services directly. Service modules return domain objects but never touch widgets.
 
+## Recent Contributions
+
+Recent GPT-5.4 contributions include:
+- Windows packaging stabilization, including the restored `pydoc` dependency needed by `astropy` and verification that the rebuilt `AstroView.exe` starts correctly.
+- Test-baseline expansion from placeholder coverage to executable unit tests for FITS loading, rendering, SEP extraction, source catalogs, background file loading, and background frame rendering.
+- One-click Windows test runners under `tests/` for the conda `astro` environment.
+- Startup compatibility so `python -m astroview` works from both the package parent directory and the repository root.
+- Background multi-file FITS loading, progressive first-frame preview rendering, and background dirty-frame rendering to reduce UI stalls on large datasets.
 
 ## Development Notes
 
 - The initial project framing and high-level structure were shaped with GPT-5.4.
 - The framework implementation and most feature work were then carried out with Claude Opus 4.6.
-- Remaining implementation details, compatibility fixes, packaging work, and later refinements were completed with GPT-5.4.
-- Recent GPT-5.4 contributions also include the Windows packaging stabilization work: diagnosing the packaged startup failure, restoring the missing `pydoc` dependency required by `astropy`, moving the PyInstaller bootstrap into the repository, and verifying that the rebuilt `AstroView.exe` starts correctly.
+- Remaining implementation details, compatibility fixes, packaging work, performance work, and later refinements were completed with GPT-5.4.

@@ -1,0 +1,118 @@
+from __future__ import annotations
+
+import unittest
+from unittest.mock import patch
+
+import sys
+from pathlib import Path
+
+REPO_PARENT = Path(__file__).resolve().parents[2]
+if str(REPO_PARENT) not in sys.path:
+    sys.path.insert(0, str(REPO_PARENT))
+
+from astroview.app.file_load_worker import FITSLoadWorker
+from astroview.core.fits_data import FITSData
+
+
+class _FakeThread:
+    def __init__(self) -> None:
+        self.interrupted = False
+
+    def isInterruptionRequested(self) -> bool:
+        return self.interrupted
+
+
+class TestFITSLoadWorker(unittest.TestCase):
+    def test_run_emits_loaded_progress_and_finished(self) -> None:
+        worker = FITSLoadWorker(["a.fits", "b.fits"], hdu_index=3)
+        loaded: list[tuple[FITSData, object]] = []
+        progress: list[tuple[int, int, str]] = []
+        finished: list[bool] = []
+
+        worker.file_loaded.connect(lambda data, preview: loaded.append((data, preview)))
+        worker.progress.connect(lambda done, total, path: progress.append((done, total, path)))
+        worker.finished.connect(lambda: finished.append(True))
+
+        with patch("astroview.app.file_load_worker.QThread.currentThread", return_value=_FakeThread()):
+            with patch(
+                "astroview.app.file_load_worker.FITSData.load",
+                side_effect=lambda path, hdu_index: FITSData(path=path, hdu_index=hdu_index),
+            ) as load_mock:
+                worker.run()
+
+        self.assertEqual([item.path for item, _ in loaded], ["a.fits", "b.fits"])
+        self.assertIsNone(loaded[0][1])
+        self.assertIsNone(loaded[1][1])
+        self.assertEqual(progress, [(1, 2, "a.fits"), (2, 2, "b.fits")])
+        self.assertEqual(finished, [True])
+        self.assertEqual(load_mock.call_count, 2)
+        self.assertEqual(load_mock.call_args_list[0].args, ("a.fits", 3))
+        self.assertEqual(load_mock.call_args_list[1].args, ("b.fits", 3))
+
+    def test_run_emits_error_and_continues(self) -> None:
+        worker = FITSLoadWorker(["bad.fits", "good.fits"])
+        errors: list[tuple[str, str]] = []
+        progress: list[tuple[int, int, str]] = []
+        loaded: list[tuple[FITSData, object]] = []
+
+        worker.file_error.connect(lambda path, detail: errors.append((path, detail)))
+        worker.file_loaded.connect(lambda data, preview: loaded.append((data, preview)))
+        worker.progress.connect(lambda done, total, path: progress.append((done, total, path)))
+
+        def side_effect(path: str, hdu_index: int | None) -> FITSData:
+            if path == "bad.fits":
+                raise ValueError("broken")
+            return FITSData(path=path, hdu_index=hdu_index)
+
+        with patch("astroview.app.file_load_worker.QThread.currentThread", return_value=_FakeThread()):
+            with patch("astroview.app.file_load_worker.FITSData.load", side_effect=side_effect):
+                worker.run()
+
+        self.assertEqual(errors, [("bad.fits", "broken")])
+        self.assertEqual([item.path for item, _ in loaded], ["good.fits"])
+        self.assertIsNone(loaded[0][1])
+        self.assertEqual(progress, [(1, 2, "bad.fits"), (2, 2, "good.fits")])
+
+    def test_run_stops_after_interruption_is_requested(self) -> None:
+        fake_thread = _FakeThread()
+        worker = FITSLoadWorker(["one.fits", "two.fits", "three.fits"])
+        loaded: list[tuple[FITSData, object]] = []
+        progress: list[tuple[int, int, str]] = []
+
+        worker.file_loaded.connect(lambda data, preview: loaded.append((data, preview)))
+        worker.progress.connect(lambda done, total, path: progress.append((done, total, path)))
+
+        def side_effect(path: str, hdu_index: int | None) -> FITSData:
+            fake_thread.interrupted = True
+            return FITSData(path=path, hdu_index=hdu_index)
+
+        with patch("astroview.app.file_load_worker.QThread.currentThread", return_value=fake_thread):
+            with patch("astroview.app.file_load_worker.FITSData.load", side_effect=side_effect):
+                worker.run()
+
+        self.assertEqual([item.path for item, _ in loaded], ["one.fits"])
+        self.assertIsNone(loaded[0][1])
+        self.assertEqual(progress, [(1, 3, "one.fits")])
+
+    def test_run_renders_preview_for_first_successful_frame_only(self) -> None:
+        worker = FITSLoadWorker(["a.fits", "b.fits"], preview_first_frame=True)
+        loaded: list[tuple[FITSData, object]] = []
+
+        worker.file_loaded.connect(lambda data, preview: loaded.append((data, preview)))
+
+        with patch("astroview.app.file_load_worker.QThread.currentThread", return_value=_FakeThread()):
+            with patch(
+                "astroview.app.file_load_worker.FITSData.load",
+                side_effect=lambda path, hdu_index: FITSData(path=path, hdu_index=hdu_index),
+            ):
+                with patch.object(worker, "_render_preview", side_effect=["preview-u8"]) as render_mock:
+                    worker.run()
+
+        self.assertEqual([item.path for item, _ in loaded], ["a.fits", "b.fits"])
+        self.assertEqual(loaded[0][1], "preview-u8")
+        self.assertIsNone(loaded[1][1])
+        render_mock.assert_called_once()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThread
 from PySide6.QtGui import QAction, QImage, QKeySequence
 from PySide6.QtWidgets import QComboBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QToolBar
 
@@ -20,7 +21,9 @@ from .contracts import (
     ViewFeedbackState,
 )
 from .canvas import ImageCanvas
+from .file_load_worker import FITSLoadWorker
 from .frame_player_dock import FramePlayerDock
+from .frame_render_worker import FrameRenderWorker
 from .header_dialog import HeaderDialog
 from .marker_dock import MarkerDock
 from .sep_panel import SEPParamsPanel
@@ -89,6 +92,19 @@ class MainWindow(QMainWindow):
         self._frame_images: list[QImage | None] = []
         self._frame_dirty: list[bool] = []
         self._current_frame_index: int = 0
+
+        self._load_thread: QThread | None = None
+        self._load_worker: FITSLoadWorker | None = None
+        self._load_append_mode: bool = False
+        self._load_total_count: int = 0
+        self._load_completed_count: int = 0
+        self._load_error_count: int = 0
+
+        self._render_generation: int = 0
+        self._render_request_id: int = 0
+        self._render_threads: dict[int, QThread] = {}
+        self._render_workers: dict[int, FrameRenderWorker] = {}
+        self._latest_render_request_by_index: dict[int, int] = {}
 
     def initialize(self) -> None:
         """High-level bootstrap entry for the window skeleton.
@@ -446,8 +462,6 @@ class MainWindow(QMainWindow):
         If path is None, a file dialog supporting multi-select is shown.
         """
 
-        from ..core.fits_data import FITSData
-
         if not path:
             paths, _ = QFileDialog.getOpenFileNames(
                 self, "Open FITS File(s)", "", "FITS Files (*.fits *.fit *.fts);;All Files (*)"
@@ -457,30 +471,289 @@ class MainWindow(QMainWindow):
         else:
             paths = [path]
 
-        self._frames.clear()
-        self._frame_images.clear()
-        self._frame_dirty.clear()
-        self._current_frame_index = 0
-
-        for p in paths:
-            try:
-                data = FITSData.load(p, hdu_index)
-                self._frames.append(data)
-                self._frame_images.append(None)
-                self._frame_dirty.append(True)
-            except Exception as e:
-                self.show_error("Open failed", f"{p}: {e}")
-
-        if not self._frames:
-            return
-
-        self._activate_frame(0)
-        self._sync_frame_player()
+        self._start_frame_load(paths, hdu_index=hdu_index, append=False)
 
     def open_file_from_request(self, request: OpenFileRequest) -> None:
         """Structured wrapper around the public open-file entry point."""
 
         self.open_file(path=request.path, hdu_index=request.hdu_index)
+
+
+    def _start_frame_load(
+        self,
+        paths: list[str],
+        *,
+        hdu_index: int | None = None,
+        append: bool = False,
+    ) -> None:
+        """Start background loading for one or more FITS files."""
+
+        if not paths:
+            return
+
+        self._stop_active_frame_load(wait=True)
+        self._load_append_mode = append
+        self._load_total_count = len(paths)
+        self._load_completed_count = 0
+        self._load_error_count = 0
+
+        if not append:
+            self.close_current_file()
+
+        self._set_loading_state(True, loaded=0, total=len(paths))
+
+        self._load_thread = QThread(self)
+        self._load_worker = FITSLoadWorker(
+            paths,
+            hdu_index=hdu_index,
+            preview_first_frame=not append,
+            stretch_name=self.fits_service.current_stretch,
+            interval_name=self.fits_service.current_interval,
+            preview_max_dimension=2048,
+        )
+        self._load_worker.moveToThread(self._load_thread)
+
+        self._load_thread.started.connect(self._load_worker.run)
+        self._load_worker.file_loaded.connect(self._handle_loaded_frame)
+        self._load_worker.file_error.connect(self._handle_frame_load_error)
+        self._load_worker.progress.connect(self._handle_frame_load_progress)
+        self._load_worker.finished.connect(self._finish_frame_load)
+        self._load_worker.finished.connect(self._load_thread.quit)
+        self._load_worker.finished.connect(self._load_worker.deleteLater)
+        self._load_thread.finished.connect(self._load_thread.deleteLater)
+        self._load_thread.finished.connect(self._clear_load_worker_refs)
+        self._load_thread.start()
+
+    def _stop_active_frame_load(self, *, wait: bool = False) -> None:
+        """Request cancellation for the active background load, if any."""
+
+        thread = self._load_thread
+        if thread is None or not thread.isRunning():
+            return
+
+        thread.requestInterruption()
+        thread.quit()
+        if wait:
+            thread.wait()
+            self._clear_load_worker_refs()
+
+    def _clear_load_worker_refs(self) -> None:
+        """Drop references to the current worker/thread pair after shutdown."""
+
+        self._load_thread = None
+        self._load_worker = None
+
+    def _cancel_active_frame_renders(self, *, wait: bool = False) -> None:
+        """Request cancellation for all active background frame renders."""
+
+        for thread in list(self._render_threads.values()):
+            if thread.isRunning():
+                thread.requestInterruption()
+                thread.quit()
+
+        if wait:
+            for thread in list(self._render_threads.values()):
+                thread.wait()
+
+        for request_id, thread in list(self._render_threads.items()):
+            if not thread.isRunning():
+                self._render_threads.pop(request_id, None)
+                self._render_workers.pop(request_id, None)
+
+    def _handle_frame_render_thread_finished(self, request_id: int) -> None:
+        """Drop bookkeeping for a completed frame-render request."""
+
+        self._render_threads.pop(request_id, None)
+        self._render_workers.pop(request_id, None)
+
+    def _schedule_frame_render(self, index: int) -> None:
+        """Render the requested frame in the background."""
+
+        if index < 0 or index >= len(self._frames):
+            return
+        if not self._frame_dirty[index]:
+            return
+
+        request_id = self._latest_render_request_by_index.get(index)
+        if request_id is not None:
+            thread = self._render_threads.get(request_id)
+            if thread is not None and thread.isRunning():
+                return
+
+        self._cancel_active_frame_renders(wait=False)
+        self._render_request_id += 1
+        request_id = self._render_request_id
+        self._latest_render_request_by_index[index] = request_id
+
+        thread = QThread(self)
+        worker = FrameRenderWorker(
+            request_id=request_id,
+            generation=self._render_generation,
+            frame_index=index,
+            data=self._frames[index],
+            stretch_name=self.fits_service.current_stretch,
+            interval_name=self.fits_service.current_interval,
+            preview_max_dimension=2048,
+        )
+        worker.moveToThread(thread)
+        self._render_workers[request_id] = worker
+
+        thread.started.connect(worker.run)
+        worker.preview_ready.connect(self._handle_frame_preview_rendered)
+        worker.render_ready.connect(self._handle_frame_rendered)
+        worker.render_error.connect(self._handle_frame_render_error)
+        worker.finished.connect(self._handle_frame_render_thread_finished)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(thread.deleteLater)
+
+        self._render_threads[request_id] = thread
+        thread.start()
+
+    def _should_accept_render_result(self, request_id: int, generation: int, index: int) -> bool:
+        """Return whether a background render result still matches current state."""
+
+        if generation != self._render_generation:
+            return False
+        if index < 0 or index >= len(self._frames):
+            return False
+        return self._latest_render_request_by_index.get(index) == request_id
+
+    def _handle_frame_preview_rendered(
+        self,
+        request_id: int,
+        generation: int,
+        index: int,
+        image_u8: Any,
+    ) -> None:
+        """Apply a quick preview render for a frame if it is still current."""
+
+        if not self._should_accept_render_result(request_id, generation, index):
+            return
+
+        self._frame_images[index] = self._qimage_from_u8(image_u8)
+        if self._current_frame_index == index:
+            self._show_current_frame_image()
+            if self.canvas is not None and len(self._frames) == 1:
+                self.canvas.show_actual_pixels()
+                self.canvas.centerOn(self.canvas._pixmap_item)
+
+    def _handle_frame_rendered(
+        self,
+        request_id: int,
+        generation: int,
+        index: int,
+        image_u8: Any,
+    ) -> None:
+        """Apply a full-resolution render result for a frame if it is still current."""
+
+        if not self._should_accept_render_result(request_id, generation, index):
+            return
+
+        self._frame_images[index] = self._qimage_from_u8(image_u8)
+        self._frame_dirty[index] = False
+        if self._current_frame_index == index:
+            self._show_current_frame_image()
+
+    def _handle_frame_render_error(
+        self,
+        request_id: int,
+        generation: int,
+        index: int,
+        detail: str,
+    ) -> None:
+        """Report a frame-render failure if it still matches the current state."""
+
+        if not self._should_accept_render_result(request_id, generation, index):
+            return
+        self.show_error("Render failed", detail)
+
+    def _set_loading_state(
+        self,
+        is_loading: bool,
+        *,
+        loaded: int = 0,
+        total: int = 0,
+        current_path: str | None = None,
+    ) -> None:
+        """Update action enablement and status-bar text for file loading."""
+
+        for action in (self.action_open_file, self.action_append_frames, self.action_close_file):
+            if action is not None:
+                action.setEnabled(not is_loading)
+
+        if self.app_status_bar is None:
+            return
+
+        if not is_loading:
+            self.app_status_bar.clearMessage()
+            return
+
+        if total <= 0:
+            self.app_status_bar.showMessage("Loading FITS files...")
+            return
+
+        filename = ""
+        if current_path:
+            filename = Path(current_path).name
+        if filename:
+            self.app_status_bar.showMessage(f"Loading FITS {loaded}/{total}: {filename}")
+        else:
+            self.app_status_bar.showMessage(f"Loading FITS {loaded}/{total}...")
+
+    def _handle_loaded_frame(self, data: Any, preview_image_u8: Any = None) -> None:
+        """Accept one loaded FITS frame from the background worker."""
+
+        self._frames.append(data)
+        if preview_image_u8 is not None:
+            self._frame_images.append(self._qimage_from_u8(preview_image_u8))
+        else:
+            self._frame_images.append(None)
+        self._frame_dirty.append(True)
+
+        if len(self._frames) == 1:
+            self._activate_frame(0)
+
+        self._sync_frame_player()
+        if self.app_status_bar is not None and self._frames:
+            self.app_status_bar.set_frame_info(self._current_frame_index, len(self._frames))
+
+    def _handle_frame_load_error(self, path: str, detail: str) -> None:
+        """Receive a file-load failure from the background worker."""
+
+        self._load_error_count += 1
+        title = "Append failed" if self._load_append_mode else "Open failed"
+        self.show_error(title, f"{path}: {detail}")
+
+    def _handle_frame_load_progress(self, completed: int, total: int, path: str) -> None:
+        """Refresh progress text as the background worker advances."""
+
+        self._load_completed_count = completed
+        self._load_total_count = total
+        self._set_loading_state(True, loaded=completed, total=total, current_path=path)
+
+    def _finish_frame_load(self) -> None:
+        """Finalize UI state after the background load finishes."""
+
+        self._set_loading_state(False)
+        success_count = max(0, self._load_total_count - self._load_error_count)
+
+        if not self._frames:
+            if self.app_status_bar is not None:
+                self.app_status_bar.showMessage("No FITS files were loaded.", 5000)
+            return
+
+        if self.app_status_bar is not None:
+            if self._load_error_count:
+                self.app_status_bar.showMessage(
+                    f"Loaded {success_count}/{self._load_total_count} FITS files ({self._load_error_count} failed).",
+                    5000,
+                )
+            else:
+                self.app_status_bar.showMessage(
+                    f"Loaded {success_count} FITS file{'s' if success_count != 1 else ''}.",
+                    3000,
+                )
 
     def close_current_file(self) -> None:
         """Close the current FITS file and reset the window state.
@@ -490,6 +763,11 @@ class MainWindow(QMainWindow):
         -> clear canvas, table, dialog state, and status bar.
         """
 
+        self._stop_active_frame_load(wait=True)
+        self._cancel_active_frame_renders(wait=True)
+        self._render_generation += 1
+        self._latest_render_request_by_index.clear()
+        self._render_workers.clear()
         self.fits_service.close_file()
         self.current_catalog = None
         self._frames.clear()
@@ -972,35 +1250,40 @@ class MainWindow(QMainWindow):
 
     # --- Frame management ---
 
+    def _qimage_from_u8(self, image_u8: Any) -> QImage | None:
+        """Convert an 8-bit grayscale numpy image into a detached QImage."""
+
+        if image_u8 is None:
+            return None
+        h, w = image_u8.shape[:2]
+        qimage = QImage(image_u8.data, w, h, w, QImage.Format.Format_Grayscale8)
+        return qimage.copy()
+
     def _render_frame(self, data: Any) -> QImage | None:
         """Render a FITSData to QImage using the current stretch/interval."""
 
         self.fits_service.current_data = data
         result = self.fits_service.render()
-        if result.image_u8 is None:
-            return None
-        h, w = result.height, result.width
-        qimage = QImage(result.image_u8.data, w, h, w, QImage.Format.Format_Grayscale8)
-        return qimage.copy()
+        return self._qimage_from_u8(result.image_u8)
 
     def _rerender_all_frames(self) -> None:
         """Mark all frames dirty and re-render only the current frame."""
 
+        self._render_generation += 1
+        self._cancel_active_frame_renders(wait=False)
+        self._latest_render_request_by_index.clear()
         for i in range(len(self._frames)):
             self._frame_dirty[i] = True
         self._ensure_frame_rendered(self._current_frame_index)
 
     def _ensure_frame_rendered(self, index: int) -> None:
-        """Render frame at index if it is marked dirty."""
+        """Schedule background rendering for a dirty frame."""
 
         if index < 0 or index >= len(self._frames):
             return
         if not self._frame_dirty[index]:
             return
-        self._frame_images[index] = self._render_frame(self._frames[index])
-        self._frame_dirty[index] = False
-        if self._frames:
-            self.fits_service.current_data = self._frames[self._current_frame_index]
+        self._schedule_frame_render(index)
 
     def _activate_frame(self, index: int) -> None:
         """Switch to frame at index: update service, canvas, title, controls."""
@@ -1009,7 +1292,6 @@ class MainWindow(QMainWindow):
             return
 
         self._current_frame_index = index
-        self._ensure_frame_rendered(index)
         data = self._frames[index]
         self.fits_service.current_data = data
         self.current_catalog = None
@@ -1032,6 +1314,8 @@ class MainWindow(QMainWindow):
 
         if self.app_status_bar is not None:
             self.app_status_bar.set_frame_info(index, len(self._frames))
+
+        self._ensure_frame_rendered(index)
 
     def _show_current_frame_image(self) -> None:
         """Push the cached QImage for the current frame into the canvas."""
@@ -1068,27 +1352,19 @@ class MainWindow(QMainWindow):
     def _append_frames(self) -> None:
         """Append additional FITS files to the frame list."""
 
-        from ..core.fits_data import FITSData
-
         paths, _ = QFileDialog.getOpenFileNames(
             self, "Append FITS Frame(s)", "", "FITS Files (*.fits *.fit *.fts);;All Files (*)"
         )
         if not paths:
             return
 
-        for p in paths:
-            try:
-                data = FITSData.load(p)
-                self._frames.append(data)
-                self._frame_images.append(None)
-                self._frame_dirty.append(True)
-            except Exception as e:
-                self.show_error("Append failed", f"{p}: {e}")
+        self._start_frame_load(paths, append=True)
 
-        if self._frames:
-            self.fits_service.current_data = self._frames[self._current_frame_index]
+    def closeEvent(self, event: Any) -> None:
+        """Stop any active background load before the window closes."""
 
-        self._sync_frame_player()
+        self._stop_active_frame_load(wait=True)
+        super().closeEvent(event)
 
     def _go_prev_frame(self) -> None:
         if len(self._frames) > 1 and self._current_frame_index > 0:

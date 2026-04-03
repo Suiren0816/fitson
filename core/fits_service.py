@@ -146,6 +146,43 @@ class FITSService:
         return self.current_data.get_wcs()
 
 
+def render_image_u8(data: FITSData, stretch_name: str, interval_name: str) -> np.ndarray | None:
+    """Render a FITSData object to an 8-bit grayscale numpy image."""
+
+    service = FITSService()
+    service.current_data = data
+    service.set_stretch(stretch_name)
+    service.set_interval(interval_name)
+    return service.render().image_u8
+
+
+def render_preview_u8(
+    data: FITSData,
+    stretch_name: str,
+    interval_name: str,
+    *,
+    max_dimension: int = 2048,
+) -> np.ndarray | None:
+    """Render a fast low-resolution preview and expand it back to image size."""
+
+    if data.data is None:
+        return None
+
+    height, width = data.data.shape[:2]
+    longest_edge = max(height, width)
+    if longest_edge <= max_dimension:
+        return None
+
+    step = max(2, (longest_edge + max_dimension - 1) // max_dimension)
+    preview_data = data.data[::step, ::step]
+    preview_image = render_image_u8(FITSData(data=preview_data), stretch_name, interval_name)
+    if preview_image is None:
+        return None
+
+    preview_image = np.repeat(np.repeat(preview_image, step, axis=0), step, axis=1)
+    return preview_image[:height, :width]
+
+
 _STRETCH_MAP: dict[str, type] = {
     "Linear": LinearStretch,
     "Log": LogStretch,
