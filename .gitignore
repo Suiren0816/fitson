@@ -81,3 +81,9 @@ Thumbs.db
 
 # EXE iss
 *.exe
+
+# specific to this project
+zqy.py
+
+# test files
+test/
