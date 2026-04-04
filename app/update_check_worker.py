@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 import json
 import re
+from urllib.error import HTTPError
+from urllib.request import ProxyHandler, Request, build_opener
 
 from PySide6.QtCore import QObject, Signal, Slot
 
@@ -60,7 +60,7 @@ def build_release_url(tag_name: str) -> str:
 
 
 def fetch_json(url: str) -> Any:
-    """Fetch one JSON payload from the update source."""
+    """Fetch one JSON payload from the update source with proxies disabled."""
 
     request = Request(
         url,
@@ -69,8 +69,14 @@ def fetch_json(url: str) -> Any:
             "User-Agent": "AstroView Update Checker",
         },
     )
-    with urlopen(request, timeout=5) as response:
-        return json.load(response)
+    opener = build_opener(ProxyHandler({}))
+    with opener.open(request, timeout=5) as response:
+        payload = response.read()
+        status = getattr(response, "status", 200)
+        reason = getattr(response, "reason", "")
+        if status >= 400:
+            raise HTTPError(url, status, reason, hdrs=getattr(response, "headers", {}), fp=None)
+        return json.loads(payload.decode("utf-8"))
 
 
 def fetch_latest_version_info() -> tuple[str | None, str | None]:

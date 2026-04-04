@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 
 import sys
@@ -14,8 +14,11 @@ if str(REPO_PARENT) not in sys.path:
 from astroview.app.update_check_worker import (
     APP_RELEASES_API_URL,
     APP_TAGS_API_URL,
+    APP_RELEASES_URL,
     UpdateCheckWorker,
+    build_release_url,
     compare_versions,
+    fetch_json,
     fetch_latest_version_info,
     normalize_version,
 )
@@ -51,9 +54,34 @@ class TestUpdateCheckWorker(unittest.TestCase):
         self.assertEqual(latest, "1.2.5")
         self.assertTrue(url.endswith("/tag/v1.2.5"))
 
+    def test_build_release_url_points_to_github_release_tag(self) -> None:
+        self.assertEqual(
+            build_release_url("v1.2.4"),
+            f"{APP_RELEASES_URL}/tag/v1.2.4",
+        )
+
+    def test_fetch_json_uses_proxyless_opener(self) -> None:
+        response = Mock()
+        response.status = 200
+        response.reason = "OK"
+        response.headers = {}
+        response.read.return_value = b'{"tag_name":"v1.2.4"}'
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+
+        opener = Mock()
+        opener.open.return_value = response
+
+        with patch("astroview.app.update_check_worker.build_opener", return_value=opener) as opener_factory:
+            payload = fetch_json(APP_RELEASES_API_URL)
+
+        opener_factory.assert_called_once()
+        opener.open.assert_called_once()
+        self.assertEqual(payload["tag_name"], "v1.2.4")
+
     def test_worker_reports_update_available(self) -> None:
         results = []
-        worker = UpdateCheckWorker("1.2.3")
+        worker = UpdateCheckWorker("1.2.4")
         worker.result_ready.connect(results.append)
 
         with patch("astroview.app.update_check_worker.fetch_latest_version_info", return_value=("1.3.0", "https://example.com/release")):

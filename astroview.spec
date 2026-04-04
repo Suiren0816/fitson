@@ -8,6 +8,7 @@ package_dir = spec_dir
 workspace_dir = package_dir.parent
 site_packages = Path(r"D:\Miniforge\envs\astro\Lib\site-packages")
 python3_dll = Path(r"D:\Miniforge\envs\astro\python3.dll")
+python_dlls_dir = Path(r"D:\Miniforge\envs\astro\DLLs")
 pyside_package_dir = site_packages / "PySide6"
 shiboken_package_dir = site_packages / "shiboken6"
 numpy_libs_dir = site_packages / "numpy.libs"
@@ -40,11 +41,14 @@ def _append_binary_if_exists(source_dir: Path, dll_name: str, dest: str = '.') -
         binaries.append((str(dll_path), dest))
 
 
+_append_binary_if_exists(python_dlls_dir, '_ssl.pyd')
+
+
 # PySide6 / Shiboken runtime DLLs. Prefer package-local DLLs because the exact
 # filenames vary across conda/PyPI builds (for example abi3 vs cp311 suffixes).
 for dll_name in [
-    'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll', 'Qt6Network.dll',
-    'pyside6.abi3.dll', 'pyside6qml.abi3.dll',
+    'Qt6Core.dll', 'Qt6Gui.dll', 'Qt6Widgets.dll',
+    'pyside6.abi3.dll',
 ]:
     _append_binary_if_exists(pyside_package_dir, dll_name)
     _append_binary_if_exists(qt_bin, dll_name)
@@ -66,11 +70,12 @@ for dll_name in [
 
 # ICU and Qt6 transitive dependencies usually live under Library/bin.
 for dll_name in [
-    'icudt.dll', 'icudt78.dll',
-    'icuin.dll', 'icuin78.dll',
-    'icuuc.dll', 'icuuc78.dll',
+    'icudt78.dll',
+    'icuin78.dll',
+    'icuuc78.dll',
     'freetype.dll', 'libpng16.dll', 'pcre2-16.dll',
     'double-conversion.dll', 'zstd.dll',
+    'libssl-3-x64.dll', 'libcrypto-3-x64.dll',
     'libgomp-1.dll', 'libquadmath-0.dll', 'libgcc_s_seh-1.dll',
 ]:
     _append_binary_if_exists(qt_bin, dll_name)
@@ -101,6 +106,9 @@ if runtime_icon.is_file():
 hiddenimports = [
     "sep",
     "numpy.core._multiarray_tests",
+    "secrets",
+    "hmac",
+    "hashlib",
 ]
 
 
@@ -139,11 +147,14 @@ a = Analysis(
         "zmq",
         "sqlite3",
         "_sqlite3",
+        "PySide6.QtNetwork",
+        "PySide6.QtQml",
         "test",
         "unittest",
         "xmlrpc",
         "doctest",
         "lib2to3",
+        "pydoc",
     ],
     noarchive=False,
     optimize=0,
@@ -154,18 +165,22 @@ a = Analysis(
 # ---------------------------------------------------------------------------
 import re
 
-# MKL DLLs (~420 MB) are not needed when numpy uses OpenBLAS.
-# Even if MKL is still the BLAS backend at build time, we strip the DLLs that
-# are never called at runtime (avx512/avx2/mc3/tbb variants, scalapack, etc.).
-# Keep only mkl_rt and mkl_core + one threading layer if MKL is still present.
-_mkl_keep = {'mkl_rt.2.dll', 'mkl_core.2.dll', 'mkl_intel_thread.2.dll'}
+# MKL is not needed — numpy uses OpenBLAS in this environment.
+# Strip ALL MKL DLLs unconditionally (saves ~130 MB).
 _strip_patterns = [
-    # MKL variants we never need
-    re.compile(r'mkl_(avx|mc3|def|tbb|sequential|vml|scalapack|blacs|pari).*\.dll$', re.I),
-    # ICU DLLs not needed by PySide6 (keep icudt, icuin, icuuc + versioned variants)
+    re.compile(r'^mkl_', re.I),
+    # Duplicate unversioned ICU DLLs (keep only versioned icuXX78.dll variants)
+    re.compile(r'^icu(in|uc)\.dll$', re.I),
+    # ICU DLLs not needed by PySide6
     re.compile(r'^icu(io|test|tu)', re.I),
     # Tcl/Tk because tkinter is excluded
     re.compile(r'^(tcl|tk)\d', re.I),
+    # Software OpenGL fallback — not needed for desktop app (saves ~20 MB)
+    re.compile(r'^opengl32sw\.dll$', re.I),
+    # SQLite — module excluded above (saves ~3 MB)
+    re.compile(r'^sqlite3\.dll$', re.I),
+    # Qt6Network — app has no network I/O (saves ~1.4 MB)
+    re.compile(r'^Qt6Network\.dll$', re.I),
 ]
 
 _strip_exact_binaries = {
@@ -188,6 +203,8 @@ _strip_exact_binaries = {
     'qtuiotouchplugin.dll',
     'qwbmp.dll',
     'qwebp.dll',
+    # PySide6 network binding — unused
+    'QtNetwork.pyd',
 }
 
 _strip_path_fragments = (
@@ -264,4 +281,3 @@ coll = COLLECT(
     upx_exclude=[],
     name="AstroView",
 )
-
