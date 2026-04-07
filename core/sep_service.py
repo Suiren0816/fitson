@@ -89,7 +89,7 @@ class SEPService:
         bkg = sep.Background(data)
         data_sub = data - bkg
 
-        objects = sep.extract(
+        objects, segmentation_map = sep.extract(
             data_sub,
             thresh=p.thresh,
             err=bkg.globalrms,
@@ -98,6 +98,7 @@ class SEPService:
             deblend_cont=p.deblend_cont,
             clean=p.clean,
             clean_param=p.clean_param,
+            segmentation_map=True,
         )
 
         return SourceCatalog.from_sep_objects(
@@ -106,6 +107,7 @@ class SEPService:
             y_offset=y_offset,
             wcs=wcs,
             background_rms=float(bkg.globalrms),
+            segmentation_map=segmentation_map,
         )
 
     def extract_from_roi(

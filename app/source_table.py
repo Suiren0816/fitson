@@ -6,7 +6,9 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QComboBox,
     QDockWidget,
+    QHBoxLayout,
     QLabel,
     QLineEdit,
     QPlainTextEdit,
@@ -30,7 +32,10 @@ class SourceTableDock(QDockWidget):
 
     source_clicked = Signal(int)
     filter_changed = Signal(str)
+    cutout_mode_changed = Signal(str)
     MANDATORY_COLUMN_KEYS = ("ID", "X", "Y")
+    CUTOUT_MODE_INTENSITY = "Intensity"
+    CUTOUT_MODE_CONNECTED_REGION = "Connected Region"
 
     def __init__(self, parent: Any | None = None) -> None:
         super().__init__(parent)
@@ -49,6 +54,10 @@ class SourceTableDock(QDockWidget):
         self.detail_label = QLabel("Target Details", self.content_widget)
         self.detail_view = QPlainTextEdit(self.content_widget)
         self.cutout_label = QLabel("Cutout Preview", self.content_widget)
+        self.cutout_header_widget = QWidget(self.content_widget)
+        self.cutout_header_layout = QHBoxLayout(self.cutout_header_widget)
+        self.cutout_mode_label = QLabel("View:", self.cutout_header_widget)
+        self.cutout_mode_selector = QComboBox(self.cutout_header_widget)
         self.cutout_view = QLabel(self.content_widget)
 
         self.setObjectName("source_table_dock")
@@ -62,6 +71,14 @@ class SourceTableDock(QDockWidget):
         self.detail_view.setReadOnly(True)
         self.detail_view.setPlaceholderText("Select a source to inspect its detailed fields.")
         self.detail_view.setMaximumBlockCount(256)
+        self.cutout_header_layout.setContentsMargins(0, 0, 0, 0)
+        self.cutout_header_layout.addWidget(self.cutout_mode_label)
+        self.cutout_mode_selector.addItems([
+            self.CUTOUT_MODE_INTENSITY,
+            self.CUTOUT_MODE_CONNECTED_REGION,
+        ])
+        self.cutout_header_layout.addWidget(self.cutout_mode_selector)
+        self.cutout_header_layout.addStretch(1)
         self.cutout_view.setMinimumSize(160, 160)
         self.cutout_view.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.cutout_view.setStyleSheet("background: #101419; border: 1px solid #2e3b4a;")
@@ -73,11 +90,13 @@ class SourceTableDock(QDockWidget):
         self.layout.addWidget(self.detail_label)
         self.layout.addWidget(self.detail_view)
         self.layout.addWidget(self.cutout_label)
+        self.layout.addWidget(self.cutout_header_widget)
         self.layout.addWidget(self.cutout_view)
         self.setWidget(self.content_widget)
         self.configure_columns(self.default_columns())
         self.table_widget.itemSelectionChanged.connect(self._emit_selection_changed)
         self.filter_input.textChanged.connect(self._handle_filter_changed)
+        self.cutout_mode_selector.currentTextChanged.connect(self.cutout_mode_changed.emit)
         self._apply_view_state()
 
     def default_columns(self) -> list[TableColumnSpec]:
@@ -242,6 +261,7 @@ class SourceTableDock(QDockWidget):
         self.detail_label.setVisible(self.view_state.has_catalog)
         self.detail_view.setVisible(self.view_state.has_catalog)
         self.cutout_label.setVisible(self.view_state.has_catalog)
+        self.cutout_header_widget.setVisible(self.view_state.has_catalog)
         self.cutout_view.setVisible(self.view_state.has_catalog)
 
     def _emit_selection_changed(self) -> None:
@@ -356,8 +376,13 @@ class SourceTableDock(QDockWidget):
         self.cutout_view.setPixmap(scaled)
         self.cutout_view.setText("")
 
-    def clear_cutout_image(self) -> None:
+    def current_cutout_mode(self) -> str:
+        """Return the selected cutout review mode."""
+
+        return self.cutout_mode_selector.currentText()
+
+    def clear_cutout_image(self, message: str | None = None) -> None:
         """Reset the cutout preview to its empty placeholder state."""
 
         self.cutout_view.clear()
-        self.cutout_view.setText("Select a source\nto preview its cutout.")
+        self.cutout_view.setText(message or "Select a source\nto preview its cutout.")

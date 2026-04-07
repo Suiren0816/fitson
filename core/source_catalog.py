@@ -36,6 +36,9 @@ class SourceCatalog:
     """
 
     records: list[SourceRecord] = field(default_factory=list)
+    segmentation_map: Any | None = None
+    roi_x0: int = 0
+    roi_y0: int = 0
 
     COLUMN_NAMES = (
         "ID",
@@ -63,6 +66,7 @@ class SourceCatalog:
         y_offset: int = 0,
         wcs: Any = None,
         background_rms: float | None = None,
+        segmentation_map: Any | None = None,
     ) -> "SourceCatalog":
         """Build a catalog from SEP output objects.
 
@@ -102,8 +106,19 @@ class SourceCatalog:
                 b=round(float(objects["b"][i]), 3),
                 theta=round(float(objects["theta"][i]), 4),
                 flag=int(objects["flag"][i]),
+                extra={
+                    "xmin": int(_object_value(objects, "xmin", i, default=round(float(objects["x"][i])))) + x_offset,
+                    "xmax": int(_object_value(objects, "xmax", i, default=round(float(objects["x"][i])))) + x_offset,
+                    "ymin": int(_object_value(objects, "ymin", i, default=round(float(objects["y"][i])))) + y_offset,
+                    "ymax": int(_object_value(objects, "ymax", i, default=round(float(objects["y"][i])))) + y_offset,
+                },
             ))
-        return cls(records=records)
+        return cls(
+            records=records,
+            segmentation_map=segmentation_map,
+            roi_x0=x_offset,
+            roi_y0=y_offset,
+        )
 
     @staticmethod
     def _compute_snr(objects: Any, index: int, background_rms: float | None) -> float:

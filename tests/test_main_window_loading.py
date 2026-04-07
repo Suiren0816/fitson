@@ -956,6 +956,7 @@ class TestMainWindowLoading(unittest.TestCase):
         window = MainWindow()
         window.source_table_dock = Mock()
         window.source_table_dock.current_selection_state.return_value = SimpleNamespace(selected_row=0)
+        window.source_table_dock.current_cutout_mode.return_value = "Intensity"
         window.current_catalog = SourceCatalog(
             records=[SourceRecord(source_id=1, x=25.0, y=25.0)]
         )
@@ -969,6 +970,39 @@ class TestMainWindowLoading(unittest.TestCase):
             self.assertEqual(render_data.data.shape, (33, 33))
             qimage_mock.assert_called_once_with("cutout-u8")
             window.source_table_dock.set_cutout_image.assert_called_once_with("cutout-qimage")
+        finally:
+            window.deleteLater()
+
+    def test_update_source_cutout_can_render_connected_region(self) -> None:
+        window = MainWindow()
+        window.source_table_dock = Mock()
+        window.source_table_dock.current_selection_state.return_value = SimpleNamespace(selected_row=0)
+        window.source_table_dock.current_cutout_mode.return_value = "Connected Region"
+        segmap = np.zeros((20, 20), dtype=np.int32)
+        segmap[4:7, 4:7] = 1
+        segmap[8:10, 8:10] = 2
+        window.current_catalog = SourceCatalog(
+            records=[SourceRecord(
+                source_id=1,
+                x=25.0,
+                y=25.0,
+                extra={"xmin": 24, "xmax": 26, "ymin": 24, "ymax": 26},
+            )],
+            segmentation_map=segmap,
+            roi_x0=20,
+            roi_y0=20,
+        )
+        window.fits_service.current_data = FITSData(path="frame.fits", data=np.zeros((50, 60), dtype=np.float32))
+        try:
+            with patch.object(window, "_qimage_from_u8", return_value="connected-qimage") as qimage_mock:
+                window._update_source_cutout()
+
+            image_u8 = qimage_mock.call_args.args[0]
+            self.assertEqual(image_u8.shape, (11, 11))
+            self.assertEqual(int(image_u8[4, 4]), 255)
+            self.assertEqual(int(image_u8[8, 8]), 96)
+            self.assertEqual(int(image_u8[0, 0]), 0)
+            window.source_table_dock.set_cutout_image.assert_called_once_with("connected-qimage")
         finally:
             window.deleteLater()
 

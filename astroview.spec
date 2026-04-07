@@ -35,6 +35,7 @@ if numpy_hook_dir.is_dir():
     hookspath.append(str(numpy_hook_dir))
 
 qt_bin = env_dir / "Library" / "bin"
+qt_shiboken_dir = env_dir / "Library" / "shiboken6"
 
 binaries = []
 if python3_dll.is_file():
@@ -47,6 +48,12 @@ def _append_binary_if_exists(source_dir: Path, dll_name: str, dest: str = ".") -
         binaries.append((str(dll_path), dest))
 
 
+def _append_binary_glob_if_exists(source_dir: Path, pattern: str, dest: str = ".") -> None:
+    for dll_path in source_dir.glob(pattern):
+        if dll_path.is_file():
+            binaries.append((str(dll_path), dest))
+
+
 _append_binary_if_exists(python_dlls_dir, "_ssl.pyd")
 
 
@@ -56,13 +63,17 @@ for dll_name in [
     "Qt6Core.dll",
     "Qt6Gui.dll",
     "Qt6Widgets.dll",
-    "pyside6.abi3.dll",
 ]:
     _append_binary_if_exists(pyside_package_dir, dll_name)
     _append_binary_if_exists(qt_bin, dll_name)
 
+for pattern in [
+    "pyside6*.dll",
+]:
+    _append_binary_glob_if_exists(pyside_package_dir, pattern)
+    _append_binary_glob_if_exists(qt_bin, pattern)
+
 for dll_name in [
-    "shiboken6.abi3.dll",
     "concrt140.dll",
     "msvcp140.dll",
     "msvcp140_1.dll",
@@ -74,7 +85,15 @@ for dll_name in [
     "vcruntime140_1.dll",
 ]:
     _append_binary_if_exists(shiboken_package_dir, dll_name)
+    _append_binary_if_exists(qt_shiboken_dir, dll_name)
     _append_binary_if_exists(qt_bin, dll_name)
+
+for pattern in [
+    "shiboken6*.dll",
+]:
+    _append_binary_glob_if_exists(shiboken_package_dir, pattern)
+    _append_binary_glob_if_exists(qt_shiboken_dir, pattern)
+    _append_binary_glob_if_exists(qt_bin, pattern)
 
 # ICU and Qt6 transitive dependencies usually live under Library/bin.
 for dll_name in [
@@ -122,7 +141,7 @@ if version_file.is_file():
 
 hiddenimports = [
     "sep",
-    "numpy.core._multiarray_tests",
+    "numpy._core._multiarray_tests",
     "secrets",
     "hmac",
     "hashlib",

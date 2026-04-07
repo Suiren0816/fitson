@@ -63,11 +63,12 @@ class TestSEPService(unittest.TestCase):
         data = np.array([[1, 2], [3, 4]], dtype=np.float32, order="F")
         fake_background = _FakeBackground(level=1.5, globalrms=0.25)
         sep_objects = {"x": np.array([1.0]), "y": np.array([2.0])}
+        segmentation_map = np.array([[0, 1], [1, 0]], dtype=np.int32)
         catalog = SourceCatalog()
         wcs = object()
 
         with patch("core.sep_service.sep.Background", return_value=fake_background) as background_mock:
-            with patch("core.sep_service.sep.extract", return_value=sep_objects) as extract_mock:
+            with patch("core.sep_service.sep.extract", return_value=(sep_objects, segmentation_map)) as extract_mock:
                 with patch(
                     "core.sep_service.SourceCatalog.from_sep_objects",
                     return_value=catalog,
@@ -88,12 +89,14 @@ class TestSEPService(unittest.TestCase):
         self.assertEqual(extract_kwargs["deblend_cont"], 0.02)
         self.assertTrue(extract_kwargs["clean"])
         self.assertEqual(extract_kwargs["clean_param"], 1.0)
+        self.assertTrue(extract_kwargs["segmentation_map"])
         catalog_mock.assert_called_once_with(
             sep_objects,
             x_offset=10,
             y_offset=20,
             wcs=wcs,
             background_rms=0.25,
+            segmentation_map=segmentation_map,
         )
 
     def test_extract_from_roi_forwards_offsets(self) -> None:

@@ -97,6 +97,24 @@ function Resolve-IsccPath {
     return $null
 }
 
+function Assert-BundledVersion {
+    param([string]$RepoRoot)
+
+    $sourceVersionPath = Join-Path $RepoRoot "VERSION"
+    $bundleVersionPath = Join-Path $RepoRoot "dist\AstroView\_internal\astroview\VERSION"
+
+    if (-not (Test-Path -LiteralPath $bundleVersionPath)) {
+        throw "Bundled VERSION file was not produced at '$bundleVersionPath'. The installer would package a stale or incomplete build."
+    }
+
+    $sourceVersion = (Get-Content -LiteralPath $sourceVersionPath | Select-Object -First 1).Trim()
+    $bundleVersion = (Get-Content -LiteralPath $bundleVersionPath | Select-Object -First 1).Trim()
+
+    if ($sourceVersion -ne $bundleVersion) {
+        throw "Bundled app version '$bundleVersion' does not match source version '$sourceVersion'. Rebuild before creating the installer."
+    }
+}
+
 $buildPython = Resolve-BuildPython -RepoRoot $repoRoot
 if (-not $buildPython) {
     throw "Could not locate a usable python.exe for the build."
@@ -115,6 +133,8 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller build failed."
     }
+
+    Assert-BundledVersion -RepoRoot $repoRoot
 
     if (-not $SkipInstaller) {
         $iscc = Resolve-IsccPath

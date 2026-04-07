@@ -7,7 +7,8 @@
 ;      or open in Inno Setup GUI and click Build -> Compile
 
 #define MyAppName "AstroView"
-#define VersionFileHandle FileOpen("VERSION")
+#define BundledVersionFile "dist\AstroView\_internal\astroview\VERSION"
+#define VersionFileHandle FileOpen(BundledVersionFile)
 #define MyAppVersion Trim(FileRead(VersionFileHandle))
 #expr FileClose(VersionFileHandle)
 #define MyAppPublisher "Fitson"

@@ -51,6 +51,7 @@ class TestSourceCatalog(unittest.TestCase):
             y_offset=20,
             wcs=_FakeWCS(),
             background_rms=2.0,
+            segmentation_map=np.array([[0, 1], [1, 0]], dtype=np.int32),
         )
 
         self.assertEqual(len(catalog), 1)
@@ -69,6 +70,13 @@ class TestSourceCatalog(unittest.TestCase):
         self.assertEqual(record.b, 0.988)
         self.assertEqual(record.theta, 0.1235)
         self.assertEqual(record.flag, 2)
+        self.assertEqual(record.extra["xmin"], 11)
+        self.assertEqual(record.extra["xmax"], 11)
+        self.assertEqual(record.extra["ymin"], 26)
+        self.assertEqual(record.extra["ymax"], 26)
+        self.assertEqual(catalog.roi_x0, 10)
+        self.assertEqual(catalog.roi_y0, 20)
+        self.assertEqual(catalog.segmentation_map[0, 1], 1)
 
     def test_from_sep_objects_falls_back_when_wcs_conversion_fails(self) -> None:
         objects = {

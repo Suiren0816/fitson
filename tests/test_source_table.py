@@ -125,6 +125,19 @@ class TestSourceTableDock(unittest.TestCase):
         finally:
             dock.deleteLater()
 
+    def test_cutout_mode_selector_emits_selected_mode(self) -> None:
+        dock = SourceTableDock()
+        changed: list[str] = []
+        dock.cutout_mode_changed.connect(changed.append)
+        try:
+            dock.cutout_mode_selector.setCurrentText(SourceTableDock.CUTOUT_MODE_CONNECTED_REGION)
+            self._app.processEvents()
+
+            self.assertEqual(dock.current_cutout_mode(), SourceTableDock.CUTOUT_MODE_CONNECTED_REGION)
+            self.assertEqual(changed[-1], SourceTableDock.CUTOUT_MODE_CONNECTED_REGION)
+        finally:
+            dock.deleteLater()
+
 
 if __name__ == "__main__":
     unittest.main()

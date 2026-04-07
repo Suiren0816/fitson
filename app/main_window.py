@@ -6,7 +6,7 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QByteArray, Qt, QThread, QSettings, QTimer, QUrl
-from PySide6.QtGui import QAction, QDesktopServices, QImage, QKeySequence
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QImage, QKeySequence
 from PySide6.QtWidgets import QComboBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QMessageBox, QToolBar
 
 from .. import APP_NAME, APP_RELEASES_URL, __version__
@@ -329,6 +329,8 @@ class MainWindow(QMainWindow):
             self.menu_help.addAction(self.action_check_updates)
 
         self.menu_view.addSeparator()
+        self._build_theme_menu(self.menu_view)
+        self.menu_view.addSeparator()
         if self.source_table_dock is not None:
             self.menu_view.addAction(self.source_table_dock.toggleViewAction())
         if self.sep_panel_dock is not None:
@@ -339,6 +341,35 @@ class MainWindow(QMainWindow):
             self.menu_view.addAction(self.frame_player_dock.toggleViewAction())
         if self.histogram_dock is not None:
             self.menu_view.addAction(self.histogram_dock.toggleViewAction())
+
+    def _build_theme_menu(self, parent_menu: Any) -> None:
+        """Add a '主题' submenu with Dark/Light options."""
+        from .theme import AVAILABLE_THEMES, apply_theme, load_saved_theme, save_theme
+        from PySide6.QtWidgets import QApplication
+
+        theme_menu = parent_menu.addMenu("主题")
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        current = load_saved_theme()
+        labels = {"dark": "深色", "light": "浅色"}
+
+        def _make_handler(theme_name: str):
+            def _handler(checked: bool) -> None:
+                if not checked:
+                    return
+                app = QApplication.instance()
+                if app is not None:
+                    apply_theme(app, theme_name)
+                save_theme(theme_name)
+            return _handler
+
+        for name in AVAILABLE_THEMES:
+            action = QAction(labels.get(name, name), self)
+            action.setCheckable(True)
+            action.setChecked(name == current)
+            action.triggered.connect(_make_handler(name))
+            group.addAction(action)
+            theme_menu.addAction(action)
 
     def build_tool_bar(self) -> None:
         """Create the main toolbar and attach view/render controls."""
@@ -462,6 +493,7 @@ class MainWindow(QMainWindow):
             return
         self.source_table_dock.source_clicked.connect(self.handle_source_clicked)
         self.source_table_dock.filter_changed.connect(self._persist_catalog_preferences)
+        self.source_table_dock.cutout_mode_changed.connect(lambda _mode: self._update_source_cutout())
 
     def bind_sep_panel_signals(self) -> None:
         """Bind SEP-parameter panel signals to window controller methods."""
@@ -1990,29 +2022,110 @@ class MainWindow(QMainWindow):
             self.source_table_dock.clear_cutout_image()
             return
 
-        center_x = int(round(record.x))
-        center_y = int(round(record.y))
-        radius = 16
-        height, width = data.data.shape[:2]
-        x0 = max(0, center_x - radius)
-        y0 = max(0, center_y - radius)
-        x1 = min(width, center_x + radius + 1)
-        y1 = min(height, center_y + radius + 1)
+        x0, y0, x1, y1 = self._source_cutout_bounds(record, data.data.shape[:2])
         if x1 <= x0 or y1 <= y0:
             self.source_table_dock.clear_cutout_image()
             return
 
+        image_u8 = self._build_source_cutout_review_image(record, x0, y0, x1, y1)
+        if image_u8 is None:
+            return
+        self.source_table_dock.set_cutout_image(self._qimage_from_u8(image_u8))
+
+    def _source_cutout_bounds(
+        self,
+        record: Any,
+        shape: tuple[int, int],
+        *,
+        padding: int = 4,
+        fallback_radius: int = 16,
+    ) -> tuple[int, int, int, int]:
+        """Return absolute frame-space bounds for the selected source review cutout."""
+
+        height, width = shape
+        bbox = getattr(record, "extra", {}) or {}
+        if all(key in bbox for key in ("xmin", "xmax", "ymin", "ymax")):
+            x0 = max(0, int(bbox["xmin"]) - padding)
+            y0 = max(0, int(bbox["ymin"]) - padding)
+            x1 = min(width, int(bbox["xmax"]) + padding + 1)
+            y1 = min(height, int(bbox["ymax"]) + padding + 1)
+            return x0, y0, x1, y1
+
+        center_x = int(round(record.x))
+        center_y = int(round(record.y))
+        x0 = max(0, center_x - fallback_radius)
+        y0 = max(0, center_y - fallback_radius)
+        x1 = min(width, center_x + fallback_radius + 1)
+        y1 = min(height, center_y + fallback_radius + 1)
+        return x0, y0, x1, y1
+
+    def _build_source_cutout_review_image(
+        self,
+        record: Any,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> Any:
+        """Build the current cutout review image for the selected source."""
+
+        mode = ""
+        if self.source_table_dock is not None:
+            selected_mode = self.source_table_dock.current_cutout_mode()
+            if isinstance(selected_mode, str):
+                mode = selected_mode
+
+        if mode == SourceTableDock.CUTOUT_MODE_CONNECTED_REGION:
+            connected_region = self._build_connected_region_cutout(record, x0, y0, x1, y1)
+            if connected_region is not None:
+                return connected_region
+            if self.source_table_dock is not None:
+                self.source_table_dock.clear_cutout_image("Connected region unavailable.")
+            return None
+
         from ..core.fits_data import FITSData
         from ..core.fits_service import render_image_u8
 
+        data = self.fits_service.current_data
         cutout = data.data[y0:y1, x0:x1]
-        image_u8 = render_image_u8(
+        return render_image_u8(
             FITSData(data=cutout),
             self.fits_service.current_stretch,
             self.fits_service.current_interval,
             manual_limits=self.fits_service.manual_interval_limits,
         )
-        self.source_table_dock.set_cutout_image(self._qimage_from_u8(image_u8))
+
+    def _build_connected_region_cutout(
+        self,
+        record: Any,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> np.ndarray | None:
+        """Return a grayscale view of the selected source's connected region."""
+
+        if self.current_catalog is None or self.current_catalog.segmentation_map is None:
+            return None
+
+        segmap = self.current_catalog.segmentation_map
+        seg_height, seg_width = segmap.shape[:2]
+        local_x0 = max(0, x0 - self.current_catalog.roi_x0)
+        local_y0 = max(0, y0 - self.current_catalog.roi_y0)
+        local_x1 = min(seg_width, x1 - self.current_catalog.roi_x0)
+        local_y1 = min(seg_height, y1 - self.current_catalog.roi_y0)
+        if local_x1 <= local_x0 or local_y1 <= local_y0:
+            return None
+
+        seg_cutout = segmap[local_y0:local_y1, local_x0:local_x1]
+        selected_mask = seg_cutout == int(record.source_id)
+        if not np.any(selected_mask):
+            return None
+
+        image = np.zeros(seg_cutout.shape, dtype=np.uint8)
+        image[(seg_cutout > 0) & ~selected_mask] = 96
+        image[selected_mask] = 255
+        return image
 
     def _rerender_all_frames(self) -> None:
         """Mark all frames dirty and re-render only the current frame."""

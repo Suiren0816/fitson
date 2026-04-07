@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+- Added `app/theme.py` providing Fusion-based light and dark themes with full QSS coverage (menus, toolbars, docks, buttons, inputs, tables, scrollbars, tabs, sliders, progress bars).
+- Added a `视图 → 主题` submenu with `浅色 / 深色` exclusive switching; the selection is persisted via `QSettings` under `ui/theme` and restored on next launch. Default theme is light.
+- Added runtime-generated chevron arrow icons for `QSpinBox` / `QDoubleSpinBox`, rendered with `QPainter` to PNG in a temp cache directory and referenced from QSS for reliable cross-DPI display.
+
+### Changed
+- `main.py` now applies the saved theme immediately after creating the `QApplication`.
+- Removed the hard-coded global font size from the stylesheet so fonts follow the system setting and scale correctly on high-DPI displays.
+- Widened spinbox up/down buttons with distinct hover/pressed states and a separator between them for clearer interaction affordance.
+
+
+## 1.2.7 - 2026-04-07
+
+### Added
+- Added a `Connected Region` view in cutout review so the selected source's segmentation region can be inspected directly.
+
+### Fixed
+- Fixed packaged app version reporting so rebuilt installers no longer ship an older bundled app version.
+- Fixed Windows packaged startup failures by collecting the required PySide6/Shiboken runtime DLLs and NumPy 2.4 modules.
+
+### Validated
+- Verified source table, source catalog, SEP, and main-window loading tests for the connected-region cutout workflow.
+- Verified the rebuilt frozen Windows app starts successfully after the packaging fixes.
+
 ## 1.2.6 - 2026-04-06
 
 ### Added
