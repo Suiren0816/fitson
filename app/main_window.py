@@ -6,8 +6,19 @@ from typing import Any
 
 import numpy as np
 from PySide6.QtCore import QByteArray, Qt, QThread, QSettings, QTimer, QUrl
-from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QImage, QKeySequence
-from PySide6.QtWidgets import QComboBox, QDockWidget, QFileDialog, QLabel, QMainWindow, QMessageBox, QToolBar
+from PySide6.QtGui import QAction, QActionGroup, QDesktopServices, QImage, QKeySequence, QTransform
+from PySide6.QtWidgets import (
+    QComboBox,
+    QDockWidget,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QToolBar,
+    QToolButton,
+    QWidget,
+)
 
 from .. import APP_NAME, APP_RELEASES_URL, __version__
 from ..core import FITSService, OpenFileRequest, PixelSample, ROISelection, SEPService, SourceCatalog
@@ -28,6 +39,7 @@ from .catalog_field_dialog import CatalogFieldDialog
 from .canvas import ImageCanvas
 from .file_load_worker import FITSLoadWorker
 from .frame_player_dock import FramePlayerDock
+from .frame_bkg_worker import FrameBkgWorker
 from .frame_render_worker import FrameRenderWorker
 from .header_dialog import HeaderDialog
 from .histogram_dock import HistogramDock
@@ -104,6 +116,8 @@ class MainWindow(QMainWindow):
         self.action_append_frames: QAction | None = None
         self.action_target_info_fields: QAction | None = None
         self.action_check_updates: QAction | None = None
+        self.action_toggle_bkg: QAction | None = None
+        self.action_toggle_residual: QAction | None = None
 
         self.fits_service = fits_service or FITSService()
         self.sep_service = sep_service or SEPService()
@@ -116,6 +130,11 @@ class MainWindow(QMainWindow):
         self._frames: list[FITSData] = []
         self._frame_images: list[QImage | None] = []
         self._frame_dirty: list[bool] = []
+        self._frame_bkg_cache: list[FITSData | None] = []
+        self._frame_residual_cache: list[FITSData | None] = []
+        self._view_mode: str = "original"  # "original" | "background" | "residual"
+        self._last_title_detail: str | None = None
+        self._orientation: tuple[bool, bool, bool] = self._load_orientation_setting()
         self._current_frame_index: int = 0
         self._frame_step_direction: int = 1
 
@@ -132,6 +151,8 @@ class MainWindow(QMainWindow):
         self._render_workers: dict[int, FrameRenderWorker] = {}
         self._render_request_index_by_id: dict[int, int] = {}
         self._latest_render_request_by_index: dict[int, int] = {}
+        self._bkg_threads: dict[int, QThread] = {}
+        self._bkg_workers: dict[int, FrameBkgWorker] = {}
         self._sep_thread: QThread | None = None
         self._sep_worker: SEPExtractWorker | None = None
         self._sep_request_id: int = 0
@@ -282,6 +303,72 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.frame_player_dock)
         self.frame_player_dock.hide()
 
+        for dock in (
+            self.source_table_dock,
+            self.sep_panel_dock,
+            self.marker_dock,
+            self.histogram_dock,
+            self.frame_player_dock,
+        ):
+            if dock is not None:
+                self._install_dock_titlebar(dock)
+                self._enable_dock_window_chrome(dock)
+
+    def _install_dock_titlebar(self, dock: QDockWidget) -> None:
+        """Install a custom title bar with a dock/undock toggle button."""
+
+        bar = QWidget(dock)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(6, 2, 4, 2)
+        layout.setSpacing(4)
+
+        title_label = QLabel(dock.windowTitle(), bar)
+        title_label.setStyleSheet("font-weight: bold;")
+        layout.addWidget(title_label, 1)
+
+        dock_btn = QToolButton(bar)
+        dock_btn.setAutoRaise(True)
+        dock_btn.setToolTip("停靠 / 浮动")
+        dock_btn.setText("⧉")
+        dock_btn.clicked.connect(lambda: dock.setFloating(not dock.isFloating()))
+        layout.addWidget(dock_btn)
+
+        close_btn = QToolButton(bar)
+        close_btn.setAutoRaise(True)
+        close_btn.setToolTip("关闭")
+        close_btn.setText("✕")
+        close_btn.clicked.connect(dock.close)
+        layout.addWidget(close_btn)
+
+        dock.setTitleBarWidget(bar)
+        dock.windowTitleChanged.connect(title_label.setText)
+
+        def refresh_dock_button(_floating: bool) -> None:
+            dock_btn.setText("⇲" if dock.isFloating() else "⧉")
+            dock_btn.setToolTip("停靠回主窗口" if dock.isFloating() else "浮动")
+
+        dock.topLevelChanged.connect(refresh_dock_button)
+        refresh_dock_button(dock.isFloating())
+
+    def _enable_dock_window_chrome(self, dock: QDockWidget) -> None:
+        """Give a dock full window controls (minimize/maximize/close) when floated."""
+
+        def apply_chrome(floating: bool, _dock: QDockWidget = dock) -> None:
+            if not floating:
+                return
+            _dock.setWindowFlags(
+                Qt.WindowType.Window
+                | Qt.WindowType.CustomizeWindowHint
+                | Qt.WindowType.WindowTitleHint
+                | Qt.WindowType.WindowSystemMenuHint
+                | Qt.WindowType.WindowMinimizeButtonHint
+                | Qt.WindowType.WindowMaximizeButtonHint
+                | Qt.WindowType.WindowCloseButtonHint
+            )
+            _dock.show()
+
+        dock.topLevelChanged.connect(apply_chrome)
+
     def build_status_bar(self) -> None:
         """Create and install the application status bar."""
 
@@ -318,6 +405,16 @@ class MainWindow(QMainWindow):
             self.menu_view.addAction(self.action_zoom_in)
         if self.action_zoom_out is not None:
             self.menu_view.addAction(self.action_zoom_out)
+        if self.action_toggle_bkg is not None:
+            self.menu_view.addSeparator()
+            self.menu_view.addAction(self.action_toggle_bkg)
+        if self.action_toggle_residual is not None:
+            self.menu_view.addAction(self.action_toggle_residual)
+        if self.orientation_actions:
+            self.menu_view.addSeparator()
+            orient_menu = self.menu_view.addMenu("图像方向")
+            for act in self.orientation_actions:
+                orient_menu.addAction(act)
 
         if self.action_run_sep is not None:
             self.menu_tools.addAction(self.action_run_sep)
@@ -444,6 +541,27 @@ class MainWindow(QMainWindow):
         self.action_zoom_out = QAction("Zoom Out", self)
         self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
 
+        self.action_toggle_bkg = QAction("背景图视图", self)
+        self.action_toggle_bkg.setShortcut("F1")
+        self.action_toggle_bkg.setCheckable(True)
+        self.addAction(self.action_toggle_bkg)
+        self.action_toggle_residual = QAction("残差图视图", self)
+        self.action_toggle_residual.setShortcut("F2")
+        self.action_toggle_residual.setCheckable(True)
+        self.addAction(self.action_toggle_residual)
+
+        self.orientation_action_group = QActionGroup(self)
+        self.orientation_action_group.setExclusive(True)
+        self.orientation_actions: list[QAction] = []
+        for label, orientation in self._ORIENTATIONS:
+            act = QAction(label, self)
+            act.setCheckable(True)
+            if orientation == self._orientation:
+                act.setChecked(True)
+            act.triggered.connect(lambda _checked, o=orientation: self._set_orientation(o))
+            self.orientation_action_group.addAction(act)
+            self.orientation_actions.append(act)
+
         self.action_prev_frame = QAction("Previous Frame", self)
         self.action_prev_frame.setShortcut("Left")
         self.action_next_frame = QAction("Next Frame", self)
@@ -492,6 +610,7 @@ class MainWindow(QMainWindow):
         if self.source_table_dock is None:
             return
         self.source_table_dock.source_clicked.connect(self.handle_source_clicked)
+        self.source_table_dock.source_hovered.connect(self._handle_source_hovered)
         self.source_table_dock.filter_changed.connect(self._persist_catalog_preferences)
         self.source_table_dock.cutout_mode_changed.connect(lambda _mode: self._update_source_cutout())
 
@@ -540,6 +659,10 @@ class MainWindow(QMainWindow):
             self.action_zoom_in.triggered.connect(self.canvas.zoom_in)
         if self.action_zoom_out is not None and self.canvas is not None:
             self.action_zoom_out.triggered.connect(self.canvas.zoom_out)
+        if self.action_toggle_bkg is not None:
+            self.action_toggle_bkg.triggered.connect(self._toggle_bkg_view)
+        if self.action_toggle_residual is not None:
+            self.action_toggle_residual.triggered.connect(self._toggle_residual_view)
         if self.action_prev_frame is not None:
             self.action_prev_frame.triggered.connect(self._go_prev_frame)
         if self.action_next_frame is not None:
@@ -775,9 +898,13 @@ class MainWindow(QMainWindow):
     def _set_window_title(self, detail: str | None = None) -> None:
         """Apply the versioned main-window title, optionally with file context."""
 
+        self._last_title_detail = detail
         title = self._base_window_title()
         if detail:
             title = f"{title} - {detail}"
+        suffix = self._VIEW_MODE_TITLE_SUFFIX.get(self._view_mode, "")
+        if suffix:
+            title = f"{title} {suffix}"
         self.setWindowTitle(title)
 
     def check_for_updates(self) -> None:
@@ -955,12 +1082,331 @@ class MainWindow(QMainWindow):
         thread = self._render_threads.get(request_id)
         return thread is not None and thread.isRunning()
 
+    def _render_data_for_index(self, index: int) -> Any:
+        """Return cached FITSData for the current view mode, else the original.
+
+        If a background/residual variant is needed but not yet cached, the
+        caller is expected to dispatch a `FrameBkgWorker`; this method itself
+        never blocks the UI thread on SEP computation.
+        """
+
+        original = self._frames[index]
+        if self._view_mode == "original" or original.data is None:
+            return original
+        if self._view_mode == "background":
+            cached = self._frame_bkg_cache[index] if index < len(self._frame_bkg_cache) else None
+        else:
+            cached = self._frame_residual_cache[index] if index < len(self._frame_residual_cache) else None
+        return cached if cached is not None else original
+
+    def _frame_bkg_cached(self, index: int) -> bool:
+        """Whether the cache slot needed for the current view mode is populated."""
+
+        if self._view_mode == "original":
+            return True
+        if not (0 <= index < len(self._frames)):
+            return True
+        if self._view_mode == "background":
+            return self._frame_bkg_cache[index] is not None
+        return self._frame_residual_cache[index] is not None
+
+    def _dispatch_bkg_worker(self, index: int) -> None:
+        """Compute background/residual for `index` off the UI thread."""
+
+        if not (0 <= index < len(self._frames)):
+            return
+        if index in self._bkg_threads:
+            return  # already in flight
+        original = self._frames[index]
+        if original.data is None:
+            return
+
+        thread = QThread(self)
+        worker = FrameBkgWorker(
+            frame_index=index,
+            generation=self._render_generation,
+            data=original.data,
+            sep_service=self.sep_service,
+            params=self.sep_service.params,
+        )
+        worker.moveToThread(thread)
+        self._bkg_threads[index] = thread
+        self._bkg_workers[index] = worker
+
+        if index == self._current_frame_index and self.app_status_bar is not None:
+            self.app_status_bar.showMessage("正在计算背景...", 0)
+
+        thread.started.connect(worker.run)
+        worker.bkg_ready.connect(self._handle_bkg_ready)
+        worker.bkg_error.connect(self._handle_bkg_error)
+        worker.finished.connect(thread.quit)
+        worker.finished.connect(worker.deleteLater)
+        thread.finished.connect(lambda idx=index: self._handle_bkg_thread_finished(idx))
+        thread.finished.connect(thread.deleteLater)
+        thread.start()
+
+    def _handle_bkg_ready(self, index: int, generation: int, bkg: Any, residual: Any) -> None:
+        if generation != self._render_generation:
+            return
+        if not (0 <= index < len(self._frames)):
+            return
+        import dataclasses
+        original = self._frames[index]
+        self._frame_bkg_cache[index] = dataclasses.replace(original, data=bkg)
+        self._frame_residual_cache[index] = dataclasses.replace(original, data=residual)
+        if self._view_mode != "original":
+            self._frame_dirty[index] = True
+            self._schedule_frame_render(index)
+        if index == self._current_frame_index and self.source_table_dock is not None:
+            mode = self.source_table_dock.current_cutout_mode()
+            if mode in (
+                SourceTableDock.CUTOUT_MODE_BACKGROUND,
+                SourceTableDock.CUTOUT_MODE_RESIDUAL,
+            ):
+                self._update_source_cutout()
+
+    def _handle_bkg_error(self, index: int, generation: int, detail: str) -> None:
+        logger.error("Background computation failed for frame %d: %s", index, detail)
+
+    def _handle_bkg_thread_finished(self, index: int) -> None:
+        self._bkg_threads.pop(index, None)
+        self._bkg_workers.pop(index, None)
+        if (
+            index == self._current_frame_index
+            and not self._bkg_threads
+            and self.app_status_bar is not None
+        ):
+            self.app_status_bar.clearMessage()
+
+    def _cancel_bkg_workers(self, wait: bool = False) -> None:
+        for thread in list(self._bkg_threads.values()):
+            thread.requestInterruption()
+            thread.quit()
+            if wait:
+                thread.wait()
+        if wait:
+            self._bkg_threads.clear()
+            self._bkg_workers.clear()
+
+    def _invalidate_bkg_caches(self, indices: list[int] | None = None) -> None:
+        """Drop cached background/residual images.
+
+        Call after anything that changes the underlying pixel data (HDU swap,
+        frame reload) or background-extraction parameters. If the current view
+        mode depends on the cache, the affected frames are re-rendered.
+        """
+
+        if indices is None:
+            for i in range(len(self._frame_bkg_cache)):
+                self._frame_bkg_cache[i] = None
+            for i in range(len(self._frame_residual_cache)):
+                self._frame_residual_cache[i] = None
+            target_indices = list(range(len(self._frames)))
+        else:
+            target_indices = []
+            for i in indices:
+                if 0 <= i < len(self._frame_bkg_cache):
+                    self._frame_bkg_cache[i] = None
+                if 0 <= i < len(self._frame_residual_cache):
+                    self._frame_residual_cache[i] = None
+                if 0 <= i < len(self._frames):
+                    target_indices.append(i)
+
+        if self._view_mode == "original" or not target_indices:
+            return
+        self._render_generation += 1
+        self._cancel_active_frame_renders(wait=False)
+        self._cancel_bkg_workers(wait=False)
+        self._render_request_index_by_id.clear()
+        self._latest_render_request_by_index.clear()
+        for i in target_indices:
+            self._frame_dirty[i] = True
+        self._sync_current_canvas_image_state()
+        if self._current_frame_index in target_indices:
+            self._ensure_frame_rendered(self._current_frame_index)
+
+    _VIEW_MODE_ORDER = ("original", "background", "residual")
+    _VIEW_MODE_LABELS = {
+        "original": "原始图像",
+        "background": "背景图 (BKG)",
+        "residual": "原图 - 背景 (Residual)",
+    }
+    _VIEW_MODE_TITLE_SUFFIX = {
+        "original": "",
+        "background": "[BKG]",
+        "residual": "[RESIDUAL]",
+    }
+
+    _ORIENTATIONS: list[tuple[str, tuple[bool, bool, bool]]] = [
+        ("原始 (Identity)", (False, False, False)),
+        ("水平翻转", (True, False, False)),
+        ("垂直翻转", (False, True, False)),
+        ("旋转 180°", (True, True, False)),
+        ("转置", (False, False, True)),
+        ("旋转 90° CW", (False, True, True)),
+        ("旋转 90° CCW", (True, False, True)),
+        ("反对角转置", (True, True, True)),
+    ]
+
+    _ORIENTATION_SETTINGS_KEY = "view/orientation"
+
+    def _load_orientation_setting(self) -> tuple[bool, bool, bool]:
+        raw = self._settings.value(self._ORIENTATION_SETTINGS_KEY, "0,0,0")
+        try:
+            parts = [p.strip() for p in str(raw).split(",")]
+            if len(parts) != 3:
+                return (False, False, False)
+            return (parts[0] == "1", parts[1] == "1", parts[2] == "1")
+        except Exception:
+            return (False, False, False)
+
+    def _save_orientation_setting(self) -> None:
+        fh, fv, tr = self._orientation
+        self._settings.setValue(
+            self._ORIENTATION_SETTINGS_KEY,
+            f"{int(fh)},{int(fv)},{int(tr)}",
+        )
+
+    def _orient_point(self, x: float, y: float, w: int, h: int) -> tuple[float, float]:
+        """Map original-image coords (within w×h) to displayed coords."""
+        fh, fv, tr = self._orientation
+        if tr:
+            x, y = y, x
+            w, h = h, w
+        if fh:
+            x = (w - 1) - x
+        if fv:
+            y = (h - 1) - y
+        return x, y
+
+    def _unorient_point(self, x: float, y: float, w: int, h: int) -> tuple[float, float]:
+        """Map displayed coords back to original (w, h are ORIGINAL dims)."""
+        fh, fv, tr = self._orientation
+        wd, hd = (h, w) if tr else (w, h)
+        if fh:
+            x = (wd - 1) - x
+        if fv:
+            y = (hd - 1) - y
+        if tr:
+            x, y = y, x
+        return x, y
+
+    def _orient_qimage(self, image: QImage) -> QImage:
+        """Apply the current orientation to a QImage. Returns a transformed copy."""
+
+        if not isinstance(image, QImage) or self._orientation == (False, False, False):
+            return image
+        fh, fv, tr = self._orientation
+        out = image
+        if tr:
+            t = QTransform(0, 1, 1, 0, 0, 0)  # swap x,y
+            out = out.transformed(t)
+        if fh:
+            if hasattr(out, "flipped"):
+                out = out.flipped(Qt.Orientation.Horizontal)
+            else:
+                out = out.mirrored(True, False)
+        if fv:
+            if hasattr(out, "flipped"):
+                out = out.flipped(Qt.Orientation.Vertical)
+            else:
+                out = out.mirrored(False, True)
+        return out
+
+    def _axis_directions(self) -> tuple[tuple[float, float], tuple[float, float]]:
+        """Return displayed-frame direction vectors for original +X and +Y axes."""
+
+        fh, fv, tr = self._orientation
+        x_axis = [1.0, 0.0]
+        y_axis = [0.0, 1.0]
+        if tr:
+            x_axis = [x_axis[1], x_axis[0]]
+            y_axis = [y_axis[1], y_axis[0]]
+        if fh:
+            x_axis[0] = -x_axis[0]
+            y_axis[0] = -y_axis[0]
+        if fv:
+            x_axis[1] = -x_axis[1]
+            y_axis[1] = -y_axis[1]
+        return tuple(x_axis), tuple(y_axis)
+
+    def _current_original_shape(self) -> tuple[int, int] | None:
+        data = self.fits_service.current_data
+        if data is None or data.data is None:
+            return None
+        h, w = data.data.shape[:2]
+        return w, h
+
+    def _set_orientation(self, orientation: tuple[bool, bool, bool]) -> None:
+        if orientation == self._orientation:
+            return
+        self._orientation = orientation
+        self._save_orientation_setting()
+        for act, (_, o) in zip(getattr(self, "orientation_actions", []), self._ORIENTATIONS):
+            act.setChecked(o == orientation)
+        if self.canvas is not None:
+            x_axis, y_axis = self._axis_directions()
+            self.canvas.compass.set_axes(x_axis, y_axis)
+            shape = self._current_original_shape()
+            if shape is not None:
+                w, h = shape
+                self.canvas.set_source_position_transform(
+                    lambda px, py, w=w, h=h: self._orient_point(px, py, w, h)
+                )
+            else:
+                self.canvas.set_source_position_transform(None)
+        self._show_current_frame_image()
+
+    _VIEW_MODE_BADGE = {
+        "original": "",
+        "background": "BKG",
+        "residual": "RESIDUAL",
+    }
+
+    def _toggle_bkg_view(self) -> None:
+        """F1: toggle between original and background view."""
+
+        if not self._frames:
+            if self.app_status_bar is not None:
+                self.app_status_bar.showMessage("未加载图像", 2000)
+            return
+        self._set_view_mode("background" if self._view_mode != "background" else "original")
+
+    def _toggle_residual_view(self) -> None:
+        """F2: toggle between original and residual view."""
+
+        if not self._frames:
+            if self.app_status_bar is not None:
+                self.app_status_bar.showMessage("未加载图像", 2000)
+            return
+        self._set_view_mode("residual" if self._view_mode != "residual" else "original")
+
+    def _set_view_mode(self, mode: str) -> None:
+        if mode == self._view_mode:
+            return
+        self._view_mode = mode
+        if self.app_status_bar is not None:
+            self.app_status_bar.set_view_mode_label(self._VIEW_MODE_BADGE.get(mode, ""))
+        if self.action_toggle_bkg is not None:
+            self.action_toggle_bkg.setChecked(mode == "background")
+        if self.action_toggle_residual is not None:
+            self.action_toggle_residual.setChecked(mode == "residual")
+        self._set_window_title(self._last_title_detail)
+        if self.app_status_bar is not None:
+            self.app_status_bar.showMessage(
+                f"显示：{self._VIEW_MODE_LABELS[mode]}", 2000
+            )
+        self._rerender_all_frames()
+
     def _schedule_frame_render(self, index: int) -> None:
         """Render the requested frame in the background."""
 
         if index < 0 or index >= len(self._frames):
             return
         if not self._frame_dirty[index]:
+            return
+        if not self._frame_bkg_cached(index):
+            self._dispatch_bkg_worker(index)
             return
         if index != self._current_frame_index and self._has_active_render_for_index(self._current_frame_index):
             return
@@ -984,7 +1430,7 @@ class MainWindow(QMainWindow):
             request_id=request_id,
             generation=self._render_generation,
             frame_index=index,
-            data=self._frames[index],
+            data=self._render_data_for_index(index),
             stretch_name=self.fits_service.current_stretch,
             interval_name=self.fits_service.current_interval,
             preview_dimensions=self._preview_render_dimensions(),
@@ -1111,6 +1557,8 @@ class MainWindow(QMainWindow):
         else:
             self._frame_images.append(None)
         self._frame_dirty.append(True)
+        self._frame_bkg_cache.append(None)
+        self._frame_residual_cache.append(None)
 
         if len(self._frames) == 1:
             self._activate_frame(0)
@@ -1166,6 +1614,7 @@ class MainWindow(QMainWindow):
 
         self._stop_active_frame_load(wait=True)
         self._cancel_active_frame_renders(wait=True)
+        self._cancel_bkg_workers(wait=True)
         self._cancel_active_sep_extract(wait=True)
         self._render_generation += 1
         self._render_request_index_by_id.clear()
@@ -1176,6 +1625,16 @@ class MainWindow(QMainWindow):
         self._frames.clear()
         self._frame_images.clear()
         self._frame_dirty.clear()
+        self._frame_bkg_cache.clear()
+        self._frame_residual_cache.clear()
+        if self._view_mode != "original":
+            self._view_mode = "original"
+            if self.action_toggle_bkg is not None:
+                self.action_toggle_bkg.setChecked(False)
+            if self.action_toggle_residual is not None:
+                self.action_toggle_residual.setChecked(False)
+            if self.app_status_bar is not None:
+                self.app_status_bar.set_view_mode_label("")
         self._current_frame_index = 0
         self._set_window_title()
 
@@ -1682,6 +2141,8 @@ class MainWindow(QMainWindow):
 
         self.set_current_catalog(catalog)
         self.sync_catalog_views()
+        if len(catalog) == 1:
+            self.handle_source_clicked(0)
         if self.app_status_bar is not None:
             self.app_status_bar.showMessage(
                 f"Extracted {len(catalog)} source{'s' if len(catalog) != 1 else ''} from ROI "
@@ -1847,13 +2308,19 @@ class MainWindow(QMainWindow):
     def handle_roi_selected(self, x0: int, y0: int, width: int, height: int) -> None:
         """Handle ROI selection from the canvas and trigger SEP extraction.
 
-        Main flow:
-        `ImageCanvas.roi_selected` -> `MainWindow.handle_roi_selected()`
-        -> ROI slice from `FITSData`
-        -> `SEPService.extract_from_roi()`
-        -> `ImageCanvas.draw_sources()` + `SourceTableDock.populate()`.
+        ROI arrives in displayed-image coords; remap to original frame so SEP
+        always operates on the unrotated data.
         """
 
+        shape = self._current_original_shape()
+        if shape is not None and self._orientation != (False, False, False):
+            w, h = shape
+            x1d, y1d = x0 + width, y0 + height
+            ox0, oy0 = self._unorient_point(x0, y0, w, h)
+            ox1, oy1 = self._unorient_point(x1d, y1d, w, h)
+            ox0, ox1 = sorted((int(round(ox0)), int(round(ox1))))
+            oy0, oy1 = sorted((int(round(oy0)), int(round(oy1))))
+            x0, y0, width, height = ox0, oy0, ox1 - ox0, oy1 - oy0
         self._start_sep_extract(ROISelection(x0=x0, y0=y0, width=width, height=height))
 
     def handle_roi_selection(self, selection: ROISelection) -> None:
@@ -1876,6 +2343,14 @@ class MainWindow(QMainWindow):
             self.source_table_dock.select_source(index)
         self._update_source_cutout(index)
 
+    def _handle_source_hovered(self, index: int) -> None:
+        """Highlight a source on the canvas as the user hovers its row."""
+
+        if self.canvas is None:
+            return
+        self.canvas.highlight_source(index)
+        self.canvas.set_overlay_state(self.build_canvas_overlay_state(highlighted_index=index))
+
     def handle_sep_params_changed(self, params: Any) -> None:
         """Receive updated SEP parameters from the parameter panel.
 
@@ -1885,7 +2360,13 @@ class MainWindow(QMainWindow):
         """
 
         if params is not None:
+            old = self.sep_service.params
             self.sep_service.params = params
+            if (
+                old.bkg_box_size != params.bkg_box_size
+                or old.bkg_filter_size != params.bkg_filter_size
+            ):
+                self._invalidate_bkg_caches()
 
     def update_status_from_cursor(self, x: float, y: float) -> None:
         """Update status-bar information from the current cursor position.
@@ -1896,9 +2377,11 @@ class MainWindow(QMainWindow):
         """
 
         data = self.fits_service.current_data
-        if data is None:
+        if data is None or data.data is None:
             return
-        sample = data.sample_pixel(int(x), int(y))
+        h, w = data.data.shape[:2]
+        ox, oy = self._unorient_point(x, y, w, h)
+        sample = data.sample_pixel(int(ox), int(oy))
         self.apply_pixel_sample(sample)
 
     def apply_pixel_sample(self, sample: PixelSample) -> None:
@@ -2075,6 +2558,9 @@ class MainWindow(QMainWindow):
             if isinstance(selected_mode, str):
                 mode = selected_mode
 
+        if mode in (SourceTableDock.CUTOUT_MODE_BACKGROUND, SourceTableDock.CUTOUT_MODE_RESIDUAL):
+            return self._build_bkg_or_residual_cutout(mode, x0, y0, x1, y1)
+
         if mode == SourceTableDock.CUTOUT_MODE_CONNECTED_REGION:
             connected_region = self._build_connected_region_cutout(record, x0, y0, x1, y1)
             if connected_region is not None:
@@ -2093,6 +2579,41 @@ class MainWindow(QMainWindow):
             self.fits_service.current_stretch,
             self.fits_service.current_interval,
             manual_limits=self.fits_service.manual_interval_limits,
+        )
+
+    def _build_bkg_or_residual_cutout(
+        self,
+        mode: str,
+        x0: int,
+        y0: int,
+        x1: int,
+        y1: int,
+    ) -> Any:
+        """Render a cutout from the cached background or residual image."""
+
+        idx = self._current_frame_index
+        if not (0 <= idx < len(self._frames)):
+            return None
+        substitute = (
+            self._frame_bkg_cache[idx]
+            if mode == SourceTableDock.CUTOUT_MODE_BACKGROUND
+            else self._frame_residual_cache[idx]
+        )
+        if substitute is None or substitute.data is None:
+            self._dispatch_bkg_worker(idx)
+            if self.source_table_dock is not None:
+                self.source_table_dock.clear_cutout_image("正在计算背景...")
+            return None
+
+        from ..core.fits_data import FITSData
+        from ..core.fits_service import render_image_u8
+
+        cutout = substitute.data[y0:y1, x0:x1]
+        return render_image_u8(
+            FITSData(data=cutout),
+            self.fits_service.current_stretch,
+            self.fits_service.current_interval,
+            manual_limits=None,
         )
 
     def _build_connected_region_cutout(
@@ -2166,6 +2687,17 @@ class MainWindow(QMainWindow):
         else:
             self._set_window_title(label)
 
+        if self.canvas is not None:
+            x_axis, y_axis = self._axis_directions()
+            self.canvas.compass.set_axes(x_axis, y_axis)
+            shape = self._current_original_shape()
+            if shape is not None and self._orientation != (False, False, False):
+                w, h = shape
+                self.canvas.set_source_position_transform(
+                    lambda px, py, w=w, h=h: self._orient_point(px, py, w, h)
+                )
+            else:
+                self.canvas.set_source_position_transform(None)
         self._show_current_frame_image()
         self.sync_render_controls()
 
@@ -2199,7 +2731,7 @@ class MainWindow(QMainWindow):
             if img is None:
                 self.canvas.clear_image()
                 return
-            self.canvas.set_image(img)
+            self.canvas.set_image(self._orient_qimage(img))
             self.canvas.restore_view_state(view_state)
         else:
             self.canvas.clear_image()
@@ -2303,6 +2835,9 @@ class MainWindow(QMainWindow):
         candidate = self._preferred_adjacent_frame_index()
         if candidate is None:
             return
+        if self._view_mode != "original" and not self._frame_bkg_cached(candidate):
+            self._dispatch_bkg_worker(candidate)
+            return
         if not self._frame_dirty[candidate]:
             return
         self._schedule_frame_render(candidate)
@@ -2343,6 +2878,7 @@ class MainWindow(QMainWindow):
 
         self._stop_active_frame_load(wait=True)
         self._cancel_active_frame_renders(wait=True)
+        self._cancel_bkg_workers(wait=True)
         self._cancel_active_sep_extract(wait=True)
         self._persist_window_state()
         super().closeEvent(event)

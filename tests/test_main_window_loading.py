@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 from PySide6.QtCore import QByteArray
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QImage
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import sys
@@ -277,6 +277,32 @@ class TestMainWindowLoading(unittest.TestCase):
             self._assert_settings_write(window._settings, "render/preview_profile", "Detailed")
             rerender_mock.assert_called_once_with()
             show_mock.assert_called_once_with()
+        finally:
+            window.deleteLater()
+
+    def test_orient_qimage_matches_orient_point_for_all_supported_orientations(self) -> None:
+        window = MainWindow()
+        image = QImage(3, 2, QImage.Format.Format_RGB32)
+        values = [
+            [10, 20, 30],
+            [40, 50, 60],
+        ]
+        try:
+            for y, row in enumerate(values):
+                for x, value in enumerate(row):
+                    image.setPixelColor(x, y, QColor(value, value, value))
+
+            for _label, orientation in window._ORIENTATIONS:
+                window._orientation = orientation
+                oriented = window._orient_qimage(image)
+                expected_width = image.height() if orientation[2] else image.width()
+                expected_height = image.width() if orientation[2] else image.height()
+                self.assertEqual(oriented.width(), expected_width)
+                self.assertEqual(oriented.height(), expected_height)
+                for y, row in enumerate(values):
+                    for x, value in enumerate(row):
+                        dx, dy = window._orient_point(x, y, image.width(), image.height())
+                        self.assertEqual(oriented.pixelColor(int(dx), int(dy)).red(), value)
         finally:
             window.deleteLater()
 

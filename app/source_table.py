@@ -31,10 +31,13 @@ class SourceTableDock(QDockWidget):
     """
 
     source_clicked = Signal(int)
+    source_hovered = Signal(int)
     filter_changed = Signal(str)
     cutout_mode_changed = Signal(str)
     MANDATORY_COLUMN_KEYS = ("ID", "X", "Y")
     CUTOUT_MODE_INTENSITY = "Intensity"
+    CUTOUT_MODE_BACKGROUND = "Background"
+    CUTOUT_MODE_RESIDUAL = "Residual"
     CUTOUT_MODE_CONNECTED_REGION = "Connected Region"
 
     def __init__(self, parent: Any | None = None) -> None:
@@ -75,6 +78,8 @@ class SourceTableDock(QDockWidget):
         self.cutout_header_layout.addWidget(self.cutout_mode_label)
         self.cutout_mode_selector.addItems([
             self.CUTOUT_MODE_INTENSITY,
+            self.CUTOUT_MODE_BACKGROUND,
+            self.CUTOUT_MODE_RESIDUAL,
             self.CUTOUT_MODE_CONNECTED_REGION,
         ])
         self.cutout_header_layout.addWidget(self.cutout_mode_selector)
@@ -95,6 +100,9 @@ class SourceTableDock(QDockWidget):
         self.setWidget(self.content_widget)
         self.configure_columns(self.default_columns())
         self.table_widget.itemSelectionChanged.connect(self._emit_selection_changed)
+        self.table_widget.setMouseTracking(True)
+        self.table_widget.viewport().setMouseTracking(True)
+        self.table_widget.itemEntered.connect(self._emit_hover_from_item)
         self.filter_input.textChanged.connect(self._handle_filter_changed)
         self.cutout_mode_selector.currentTextChanged.connect(self.cutout_mode_changed.emit)
         self._apply_view_state()
@@ -263,6 +271,19 @@ class SourceTableDock(QDockWidget):
         self.cutout_label.setVisible(self.view_state.has_catalog)
         self.cutout_header_widget.setVisible(self.view_state.has_catalog)
         self.cutout_view.setVisible(self.view_state.has_catalog)
+
+    def _emit_hover_from_item(self, item: QTableWidgetItem) -> None:
+        """Emit a hover signal carrying the source index of the entered row."""
+
+        if item is None:
+            return
+        row_item = self.table_widget.item(item.row(), 0)
+        if row_item is None:
+            return
+        source_index = row_item.data(Qt.ItemDataRole.UserRole)
+        if source_index is None:
+            return
+        self.source_hovered.emit(int(source_index))
 
     def _emit_selection_changed(self) -> None:
         """Bridge table selection into the public source-clicked signal."""

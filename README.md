@@ -10,13 +10,17 @@ A desktop FITS astronomical image viewer built with PySide6.
 - Interval modes: ZScale, MinMax, 99.5%, 99%, 98%, 95%
 - Mouse wheel zoom and left-click drag for panning
 - Fit-to-window and actual-pixels (100%) view options
+- View modes: original / SEP background / SEP residual, toggled with `F1` and `F2`; cached per frame and computed off the UI thread, with a `BKG` / `RESIDUAL` badge in the status bar and title
+- Image orientation as a persistent display property: all 8 D4 transforms (flip H/V, rotate 90/180/270, transpose, anti-transpose) under `View → Image Orientation`, applied automatically to every loaded frame; an on-canvas compass shows the displayed-frame `+X` / `+Y` axes
 
 ### Source Extraction (SEP)
 - Built-in SEP (Source Extractor Python) integration as an optional tool
 - Full-image or ROI (right-click drag) source extraction
 - Configurable extraction parameters (threshold, min area, deblend, etc.)
-- Source overlay ellipses on the canvas with click-to-highlight
-- Source catalog table with sortable columns
+- Source overlay ellipses on the canvas with click-to-highlight and hover-to-preview
+- Source catalog table with sortable columns; single-source extractions auto-select the result
+- Cutout review with `Intensity`, `Background`, `Residual`, and `Connected Region` modes
+- Tunable SEP background mesh (`bkg_box_size`, `bkg_filter_size`); changes invalidate the cached background and refresh the view
 - Export catalog to CSV
 
 ### Coordinate Markers
@@ -41,6 +45,10 @@ A desktop FITS astronomical image viewer built with PySide6.
 ### Header Viewer
 - Full FITS header display in a searchable dialog
 - Keyword filter for quick lookup
+
+### Workspace
+- Each dock (source table, SEP params, markers, histogram, frame player) has a custom title bar with dock/undock and close buttons
+- Floating docks gain native window controls (minimize / maximize / close) and behave as standalone windows
 
 ### Performance
 - Memory-mapped FITS loading (`memmap=True`) for large files
@@ -128,6 +136,7 @@ Recent GPT-5.4 contributions include:
 - One-click Windows test runners under `tests/` for the conda `astro` environment.
 - Startup compatibility so `python -m astroview` works from both the package parent directory and the repository root.
 - Background multi-file FITS loading, progressive first-frame preview rendering, and background dirty-frame rendering to reduce UI stalls on large datasets.
+- Image-orientation stabilization: fixed the runtime crash triggered by switching orientation on PySide6, aligned the displayed `QImage` transform with overlay/cursor coordinate remapping, and added regression coverage for all 8 supported orientations.
 
 ## Development Notes
 

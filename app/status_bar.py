@@ -23,13 +23,20 @@ class AppStatusBar(QStatusBar):
         self.value_label = QLabel("Value: -", self)
         self.world_label = QLabel("RA/Dec: - / -", self)
         self.frame_label = QLabel("", self)
+        self.view_mode_label = QLabel("", self)
         self.zoom_label = QLabel("Zoom: 100%", self)
 
         self.addPermanentWidget(self.pixel_label)
         self.addPermanentWidget(self.value_label)
         self.addPermanentWidget(self.world_label, 1)
+        self.addPermanentWidget(self.view_mode_label)
         self.addPermanentWidget(self.frame_label)
         self.addPermanentWidget(self.zoom_label)
+
+    def set_view_mode_label(self, text: str) -> None:
+        """Show a persistent indicator of the current view mode (e.g. BKG)."""
+
+        self.view_mode_label.setText(text)
 
     def set_pixel_info(self, x: int | None, y: int | None, value: float | None) -> None:
         """Update pixel coordinate and value text."""

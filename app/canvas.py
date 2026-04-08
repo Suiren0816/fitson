@@ -7,6 +7,7 @@ from PySide6.QtCore import QPoint, QRect, Qt, Signal
 from PySide6.QtGui import QColor, QImage, QMouseEvent, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsEllipseItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsTextItem, QGraphicsView, QRubberBand
 
+from .compass_overlay import CompassOverlay
 from .contracts import CanvasImageState, CanvasOverlayState, ViewFeedbackState
 from ..core.contracts import ROISelection, ZoomState
 
@@ -60,6 +61,23 @@ class ImageCanvas(QGraphicsView):
         self._scene.addItem(self._feedback_item)
         self._feedback_item.setVisible(True)
         self.set_roi_color(self._roi_color)
+
+        self._source_position_transform = None  # callable (x, y) -> (x, y)
+        self.compass = CompassOverlay(self)
+        self.compass.move(self.width() - self.compass.width() - 12, 12)
+        self.compass.raise_()
+        self.compass.show()
+
+    def resizeEvent(self, event) -> None:  # noqa: ANN001
+        super().resizeEvent(event)
+        self.compass.move(self.width() - self.compass.width() - 12, 12)
+
+    def set_source_position_transform(self, transform) -> None:
+        """Install a callable that maps catalog (x, y) into displayed coords."""
+
+        self._source_position_transform = transform
+        if self.current_catalog is not None:
+            self.draw_sources(self.current_catalog)
 
     def set_image(self, image: QImage | None) -> None:
         """Set the current image shown on the canvas.
@@ -222,7 +240,10 @@ class ImageCanvas(QGraphicsView):
             b = max(record.b, 1.0) * 3
             item = QGraphicsEllipseItem(-a, -b, a * 2, b * 2)
             item.setPen(self._source_pen)
-            item.setPos(record.x, record.y)
+            px, py = record.x, record.y
+            if self._source_position_transform is not None:
+                px, py = self._source_position_transform(px, py)
+            item.setPos(px, py)
             item.setRotation(math.degrees(record.theta))
             item.setData(self._SOURCE_INDEX_DATA_KEY, index)
             self._scene.addItem(item)

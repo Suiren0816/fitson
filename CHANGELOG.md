@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+## 1.2.8 - 2026-04-08
+
+### Added
+- Added a SEP background / residual view mode toggle: `F1` switches between original and background, `F2` between original and residual; both modes share a per-frame cache so toggling is instant after the first compute.
+- Added asynchronous background computation via `app/frame_bkg_worker.py` so SEP background extraction never blocks the UI; the status bar shows `正在计算背景...` while a worker runs and adjacent frames are pre-warmed for smoother stepping.
+- Added `SEPService.compute_background()` as the single entry point for SEP background/residual computation, with new `bkg_box_size` and `bkg_filter_size` parameters exposed in the SEP panel; changing either invalidates the cached background and triggers a re-render.
+- Added a persistent view-mode badge (`BKG` / `RESIDUAL`) in the status bar plus a `[BKG]` / `[RESIDUAL]` suffix in the window title so the active view is always visible.
+- Added `Background` and `Residual` cutout-review modes that slice from the same cached background/residual frames used by the main view.
+- Added auto-selection of the only source after a SEP extraction returns exactly one record, so the canvas highlight, table row, and cutout preview update without an extra click.
+- Added a hover-to-highlight signal in the source table: hovering a row temporarily highlights the corresponding source on the canvas without disturbing the click selection or cutout preview.
+- Added a custom dock title bar with dock/undock and close buttons; floating docks now also gain native minimize / maximize / close window controls so each panel can be used as a standalone window.
+- Added an image-orientation property with all 8 D4 transforms (identity, flip H/V, rotate 90/180/270, transpose, anti-transpose) under `视图 → 图像方向`. Orientation is persisted via `QSettings` (`view/orientation`) and applied as the primary display property: every loaded frame is presented in the chosen orientation from the start.
+- Added `app/compass_overlay.py`, a small `CompassOverlay` widget anchored to the canvas top-right that paints the displayed-frame directions of the original `+X` and `+Y` axes and updates whenever the orientation changes.
+
+### Changed
+- `MainWindow._render_data_for_index()` is now cache-only and never blocks the UI thread on SEP computation; cache misses dispatch a `FrameBkgWorker` and the canvas updates when the result lands.
+- `_invalidate_bkg_caches()` centralizes background/residual cache invalidation, cancels in-flight workers, and re-renders only the frames that actually depend on the cache.
+- `ImageCanvas.draw_sources()` now consults an optional position-transform callable so source overlays follow the active orientation while the underlying catalog stays in original-image coordinates.
+- Cursor sampling and ROI extraction now inverse-map displayed coordinates back to the original frame, so SEP, cutout, header, and pixel-value lookups always operate on the unrotated data regardless of the active view mode or orientation.
+- Closing a file resets the view mode to original, clears the orientation badge, and cancels any in-flight background workers.
+
+### Fixed
+- Fixed a crash when switching image orientation on PySide6 builds where `QImage.mirrored()` rejects keyword arguments; orientation changes now use a Qt-compatible transform path.
+- Fixed oriented frame rendering so the displayed `QImage` transform matches the catalog/cursor coordinate mapping for all 8 supported D4 orientations.
+- Added regression coverage for all 8 image-orientation transforms so future orientation refactors do not reintroduce display/coordinate mismatches.
+
 ## 1.2.7 - 2026-04-07
 
 ### Added
