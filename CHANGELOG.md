@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 1.3.0 - 2026-04-10
+
+### Fixed
+- Fixed critical bug where multi-frame playback (e.g. 15 frames) crashed the application after ~1 minute due to unbounded render thread accumulation. Frame renders during playback now use preview-only mode, eliminating thread pile-up.
+- Fixed "Rendering Full Frame" indicator staying visible indefinitely during playback even though frames were displaying correctly.
+
+### Added
+- Added a background render queue that automatically renders all frames at full resolution during playback. Frames display instantly using fast previews; once the queue completes, playback runs entirely from cache with zero latency.
+
 ## 1.2.9 - 2026-04-10
 
 ### Added
