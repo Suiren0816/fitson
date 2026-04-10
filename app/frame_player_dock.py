@@ -21,6 +21,8 @@ class FramePlayerDock(QDockWidget):
     """Dock panel for multi-frame FITS playback control."""
 
     frame_changed = Signal(int)  # emits current frame index
+    playback_started = Signal()  # emitted when playback begins
+    playback_stopped = Signal()  # emitted when playback stops
 
     def __init__(self, parent: Any | None = None) -> None:
         super().__init__("Frame Player", parent)
@@ -199,11 +201,17 @@ class FramePlayerDock(QDockWidget):
         self.play_btn.setText("Pause")
         self._update_timer_interval()
         self._timer.start()
+        self.playback_started.emit()
+
+    def is_playing(self) -> bool:
+        """Return whether playback is currently active."""
+        return self._playing
 
     def _stop_playback(self) -> None:
         self._playing = False
         self._timer.stop()
         self.play_btn.setText("Play")
+        self.playback_stopped.emit()
 
     def _update_timer_interval(self) -> None:
         fps = self.fps_spin.value()

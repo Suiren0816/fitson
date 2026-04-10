@@ -153,6 +153,8 @@ class MainWindow(QMainWindow):
         self._render_workers: dict[int, FrameRenderWorker] = {}
         self._render_request_index_by_id: dict[int, int] = {}
         self._latest_render_request_by_index: dict[int, int] = {}
+        self._playback_render_queue: list[int] = []
+        self._playback_bg_render_ids: set[int] = set()
         self._bkg_threads: dict[int, QThread] = {}
         self._bkg_workers: dict[int, FrameBkgWorker] = {}
         self._sep_thread: QThread | None = None
@@ -699,6 +701,8 @@ class MainWindow(QMainWindow):
             self._sync_marker_visual_style()
         if self.frame_player_dock is not None:
             self.frame_player_dock.frame_changed.connect(self._switch_frame)
+            self.frame_player_dock.playback_started.connect(self._on_playback_started)
+            self.frame_player_dock.playback_stopped.connect(self._on_playback_stopped)
 
     def apply_startup_request(self) -> None:
         """Apply the optional startup file request passed from `main.py`.
@@ -1071,9 +1075,13 @@ class MainWindow(QMainWindow):
     def _handle_frame_render_thread_finished(self, request_id: int) -> None:
         """Drop bookkeeping for a completed frame-render request."""
 
+        was_bg = request_id in self._playback_bg_render_ids
         self._render_threads.pop(request_id, None)
         self._render_workers.pop(request_id, None)
         self._render_request_index_by_id.pop(request_id, None)
+        self._playback_bg_render_ids.discard(request_id)
+        if was_bg:
+            self._pump_playback_render_queue()
 
     def _cancel_frame_render_request(self, request_id: int, *, wait: bool = False) -> None:
         """Request cancellation for one active frame-render request."""
@@ -1088,10 +1096,13 @@ class MainWindow(QMainWindow):
             thread.wait()
 
     def _cancel_stale_frame_renders(self, preferred_index: int, *, wait: bool = False) -> None:
-        """Stop active render requests for frames other than the preferred one."""
+        """Stop active render requests for frames other than the preferred one.
+
+        Playback background renders (full-res cache fills) are preserved.
+        """
 
         for request_id, index in list(self._render_request_index_by_id.items()):
-            if index != preferred_index:
+            if index != preferred_index and request_id not in self._playback_bg_render_ids:
                 self._cancel_frame_render_request(request_id, wait=wait)
 
     def _has_active_render_for_index(self, index: int) -> bool:
@@ -1408,7 +1419,60 @@ class MainWindow(QMainWindow):
             )
         self._rerender_all_frames()
 
-    def _schedule_frame_render(self, index: int) -> None:
+    def _is_playback_active(self) -> bool:
+        """Return whether the frame player is currently playing."""
+        return self.frame_player_dock is not None and self.frame_player_dock.is_playing()
+
+    def _on_playback_started(self) -> None:
+        """Begin background full-resolution renders for all dirty frames."""
+        self._build_playback_render_queue()
+        self._pump_playback_render_queue()
+
+    def _on_playback_stopped(self) -> None:
+        """Trigger a full render for the current frame when playback stops."""
+        self._playback_render_queue.clear()
+        self._playback_bg_render_ids.clear()
+        idx = self._current_frame_index
+        if 0 <= idx < len(self._frame_dirty) and self._frame_dirty[idx]:
+            self._schedule_frame_render(idx)
+
+    def _build_playback_render_queue(self) -> None:
+        """Build ordered queue of dirty frames to render during playback.
+
+        Frames are ordered starting after the current frame so that upcoming
+        frames in the playback sequence are rendered first.
+        """
+        count = len(self._frames)
+        if count == 0:
+            self._playback_render_queue = []
+            return
+        start = self._current_frame_index
+        queue = []
+        for offset in range(count):
+            idx = (start + offset + 1) % count
+            if self._frame_dirty[idx]:
+                queue.append(idx)
+        self._playback_render_queue = queue
+
+    def _pump_playback_render_queue(self) -> None:
+        """Start the next background full render from the playback queue."""
+        if not self._is_playback_active():
+            return
+
+        # Wait until no background render is in flight.
+        for rid in list(self._playback_bg_render_ids):
+            thread = self._render_threads.get(rid)
+            if thread is not None and thread.isRunning():
+                return
+
+        while self._playback_render_queue:
+            idx = self._playback_render_queue.pop(0)
+            if 0 <= idx < len(self._frame_dirty) and self._frame_dirty[idx]:
+                self._schedule_frame_render(idx, playback_bg=True)
+                return
+        # Queue exhausted — nothing left to do.
+
+    def _schedule_frame_render(self, index: int, *, playback_bg: bool = False) -> None:
         """Render the requested frame in the background."""
 
         if index < 0 or index >= len(self._frames):
@@ -1418,8 +1482,15 @@ class MainWindow(QMainWindow):
         if not self._frame_bkg_cached(index):
             self._dispatch_bkg_worker(index)
             return
-        if index != self._current_frame_index and self._has_active_render_for_index(self._current_frame_index):
-            return
+
+        playing = self._is_playback_active()
+
+        if not playback_bg:
+            # During playback, skip rendering if a preview image is already cached.
+            if playing and self._frame_images[index] is not None:
+                return
+            if index != self._current_frame_index and self._has_active_render_for_index(self._current_frame_index):
+                return
 
         request_id = self._latest_render_request_by_index.get(index)
         if request_id is not None:
@@ -1427,13 +1498,17 @@ class MainWindow(QMainWindow):
             if thread is not None and thread.isRunning():
                 return
 
-        if index == self._current_frame_index:
+        if not playback_bg and index == self._current_frame_index:
             self._cancel_stale_frame_renders(index)
 
         self._render_request_id += 1
         request_id = self._render_request_id
         self._latest_render_request_by_index[index] = request_id
         self._render_request_index_by_id[request_id] = index
+        if playback_bg:
+            self._playback_bg_render_ids.add(request_id)
+
+        use_preview_only = playing and not playback_bg
 
         thread = QThread(self)
         worker = FrameRenderWorker(
@@ -1445,6 +1520,7 @@ class MainWindow(QMainWindow):
             interval_name=self.fits_service.current_interval,
             preview_dimensions=self._preview_render_dimensions(),
             manual_limits=self.fits_service.manual_interval_limits,
+            preview_only=use_preview_only,
         )
         worker.moveToThread(thread)
         self._render_workers[request_id] = worker
@@ -1623,6 +1699,8 @@ class MainWindow(QMainWindow):
         """
 
         self._stop_active_frame_load(wait=True)
+        self._playback_render_queue.clear()
+        self._playback_bg_render_ids.clear()
         self._cancel_active_frame_renders(wait=True)
         self._cancel_bkg_workers(wait=True)
         self._cancel_active_sep_extract(wait=True)
@@ -1813,7 +1891,7 @@ class MainWindow(QMainWindow):
             return CanvasImageState(feedback=self.build_empty_image_feedback())
         height, width = current_data.data.shape[:2]
         feedback = ViewFeedbackState(status="ready")
-        if self._is_frame_rendering(self._current_frame_index):
+        if self._is_frame_rendering(self._current_frame_index) and not self._is_playback_active():
             feedback = self.build_rendering_image_feedback(
                 has_preview=self._current_frame_has_preview_image()
             )
@@ -2664,6 +2742,8 @@ class MainWindow(QMainWindow):
         """Mark all frames dirty and re-render only the current frame."""
 
         self._render_generation += 1
+        self._playback_render_queue.clear()
+        self._playback_bg_render_ids.clear()
         self._cancel_active_frame_renders(wait=False)
         self._render_request_index_by_id.clear()
         self._latest_render_request_by_index.clear()
@@ -2671,6 +2751,9 @@ class MainWindow(QMainWindow):
             self._frame_dirty[i] = True
         self._sync_current_canvas_image_state()
         self._ensure_frame_rendered(self._current_frame_index)
+        if self._is_playback_active():
+            self._build_playback_render_queue()
+            self._pump_playback_render_queue()
 
     def _ensure_frame_rendered(self, index: int) -> None:
         """Schedule background rendering for a dirty frame."""
@@ -2788,7 +2871,7 @@ class MainWindow(QMainWindow):
 
         index = self._current_frame_index
         has_frames = 0 <= index < len(self._frames)
-        is_rendering = has_frames and self._is_frame_rendering(index)
+        is_rendering = has_frames and self._is_frame_rendering(index) and not self._is_playback_active()
         has_preview = has_frames and self._current_frame_has_preview_image()
         self.frame_player_dock.set_render_state(is_rendering, has_preview=has_preview)
 

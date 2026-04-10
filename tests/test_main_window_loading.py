@@ -624,6 +624,7 @@ class TestMainWindowLoading(unittest.TestCase):
         window = MainWindow()
         window.canvas = Mock()
         window.frame_player_dock = Mock()
+        window.frame_player_dock.is_playing.return_value = False
         window._frames = [FITSData(path="frame.fits")]
         window._frame_images = [None]
         window._frame_dirty = [True]

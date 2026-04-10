@@ -25,6 +25,7 @@ class FrameRenderWorker(QObject):
         interval_name: str,
         preview_dimensions: tuple[int, ...] = (1024, 2048),
         manual_limits: tuple[float, float] | None = None,
+        preview_only: bool = False,
     ) -> None:
         super().__init__()
         self.request_id = request_id
@@ -35,6 +36,7 @@ class FrameRenderWorker(QObject):
         self.interval_name = interval_name
         self.preview_dimensions = tuple(sorted(set(preview_dimensions)))
         self.manual_limits = manual_limits
+        self.preview_only = preview_only
 
     @Slot()
     def run(self) -> None:
@@ -53,6 +55,9 @@ class FrameRenderWorker(QObject):
                     self.preview_ready.emit(self.request_id, self.generation, self.frame_index, preview)
                 if thread.isInterruptionRequested():
                     return
+
+            if self.preview_only:
+                return
 
             image_u8 = render_image_u8(
                 self.data,
