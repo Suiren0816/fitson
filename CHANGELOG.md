@@ -1,6 +1,17 @@
 ﻿# Changelog
 
-## Unreleased
+## 1.2.9 - 2026-04-10
+
+### Added
+- Added a magnifier overlay (`F1` toggle): 200×200 floating lens that follows the cursor, showing a zoomed pixel view with crosshair and pixel coordinates. Magnification (2–16×, default 4×) is relative to the current canvas zoom level and adjustable from the toolbar spinbox. Cursor switches to crosshair while the magnifier is active.
+
+### Changed
+- Unified background/residual view mode switching from two separate shortcuts (`F1`/`F2`) into a single `Tab` key that cycles original → background → residual → original.
+
+### Fixed
+- Fixed Tools → SEP Extract unexpectedly popping up the Histogram dock and freezing the UI while paging in the full image. `run_sep_extract` no longer force-shows the histogram dock.
+- Fixed `_refresh_histogram_view` running a full-image `nanmin/nanmax/histogram` pass on the UI thread even when the Histogram dock was hidden. The refresh now short-circuits while the dock is invisible and lazily recomputes via `visibilityChanged` the first time the user opens it, eliminating hidden stalls on startup, file load, and frame switches.
+- Fixed the window title bar not showing a computing indicator when switching to BKG/Residual view while the background is still being computed; the title now appends "计算中..." and clears it when the computation finishes.
 
 ## 1.2.8 - 2026-04-08
 

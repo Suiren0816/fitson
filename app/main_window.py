@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMessageBox,
+    QSpinBox,
     QToolBar,
     QToolButton,
     QWidget,
@@ -101,6 +102,7 @@ class MainWindow(QMainWindow):
         self.stretch_selector: Any = None
         self.interval_selector: Any = None
         self.preview_profile_selector: Any = None
+        self.magnifier_spinbox: Any = None
 
         self.action_open_file: QAction | None = None
         self.action_export_catalog: QAction | None = None
@@ -116,8 +118,8 @@ class MainWindow(QMainWindow):
         self.action_append_frames: QAction | None = None
         self.action_target_info_fields: QAction | None = None
         self.action_check_updates: QAction | None = None
-        self.action_toggle_bkg: QAction | None = None
-        self.action_toggle_residual: QAction | None = None
+        self.action_cycle_view_mode: QAction | None = None
+        self.action_toggle_magnifier: QAction | None = None
 
         self.fits_service = fits_service or FITSService()
         self.sep_service = sep_service or SEPService()
@@ -405,11 +407,11 @@ class MainWindow(QMainWindow):
             self.menu_view.addAction(self.action_zoom_in)
         if self.action_zoom_out is not None:
             self.menu_view.addAction(self.action_zoom_out)
-        if self.action_toggle_bkg is not None:
+        if self.action_cycle_view_mode is not None:
             self.menu_view.addSeparator()
-            self.menu_view.addAction(self.action_toggle_bkg)
-        if self.action_toggle_residual is not None:
-            self.menu_view.addAction(self.action_toggle_residual)
+            self.menu_view.addAction(self.action_cycle_view_mode)
+        if self.action_toggle_magnifier is not None:
+            self.menu_view.addAction(self.action_toggle_magnifier)
         if self.orientation_actions:
             self.menu_view.addSeparator()
             orient_menu = self.menu_view.addMenu("图像方向")
@@ -496,6 +498,10 @@ class MainWindow(QMainWindow):
         self.main_toolbar.addWidget(QLabel("Preview:", self))
         if self.preview_profile_selector is not None:
             self.main_toolbar.addWidget(self.preview_profile_selector)
+        self.main_toolbar.addSeparator()
+        self.main_toolbar.addWidget(QLabel("放大镜:", self))
+        if self.magnifier_spinbox is not None:
+            self.main_toolbar.addWidget(self.magnifier_spinbox)
         self.sync_render_controls()
 
     def create_file_actions(self) -> None:
@@ -541,14 +547,14 @@ class MainWindow(QMainWindow):
         self.action_zoom_out = QAction("Zoom Out", self)
         self.action_zoom_out.setShortcut(QKeySequence.StandardKey.ZoomOut)
 
-        self.action_toggle_bkg = QAction("背景图视图", self)
-        self.action_toggle_bkg.setShortcut("F1")
-        self.action_toggle_bkg.setCheckable(True)
-        self.addAction(self.action_toggle_bkg)
-        self.action_toggle_residual = QAction("残差图视图", self)
-        self.action_toggle_residual.setShortcut("F2")
-        self.action_toggle_residual.setCheckable(True)
-        self.addAction(self.action_toggle_residual)
+        self.action_cycle_view_mode = QAction("切换视图模式", self)
+        self.action_cycle_view_mode.setShortcut("Tab")
+        self.addAction(self.action_cycle_view_mode)
+
+        self.action_toggle_magnifier = QAction("放大镜", self)
+        self.action_toggle_magnifier.setShortcut("F1")
+        self.action_toggle_magnifier.setCheckable(True)
+        self.addAction(self.action_toggle_magnifier)
 
         self.orientation_action_group = QActionGroup(self)
         self.orientation_action_group.setExclusive(True)
@@ -588,6 +594,12 @@ class MainWindow(QMainWindow):
         self.interval_selector.setObjectName("interval_selector")
         self.preview_profile_selector = QComboBox(self)
         self.preview_profile_selector.setObjectName("preview_profile_selector")
+
+        self.magnifier_spinbox = QSpinBox(self)
+        self.magnifier_spinbox.setObjectName("magnifier_spinbox")
+        self.magnifier_spinbox.setRange(2, 16)
+        self.magnifier_spinbox.setValue(4)
+        self.magnifier_spinbox.setSuffix("x")
 
     def create_help_actions(self) -> None:
         """Define help-oriented actions."""
@@ -637,6 +649,7 @@ class MainWindow(QMainWindow):
         if self.histogram_dock is not None:
             self.histogram_dock.manual_range_applied.connect(self._handle_histogram_manual_range)
             self.histogram_dock.auto_range_requested.connect(self._handle_histogram_auto_range)
+            self.histogram_dock.visibilityChanged.connect(self._handle_histogram_visibility_changed)
 
     def bind_action_triggers(self) -> None:
         """Bind QAction triggers to their command handlers."""
@@ -659,10 +672,12 @@ class MainWindow(QMainWindow):
             self.action_zoom_in.triggered.connect(self.canvas.zoom_in)
         if self.action_zoom_out is not None and self.canvas is not None:
             self.action_zoom_out.triggered.connect(self.canvas.zoom_out)
-        if self.action_toggle_bkg is not None:
-            self.action_toggle_bkg.triggered.connect(self._toggle_bkg_view)
-        if self.action_toggle_residual is not None:
-            self.action_toggle_residual.triggered.connect(self._toggle_residual_view)
+        if self.action_cycle_view_mode is not None:
+            self.action_cycle_view_mode.triggered.connect(self._cycle_view_mode)
+        if self.action_toggle_magnifier is not None and self.canvas is not None:
+            self.action_toggle_magnifier.triggered.connect(self.canvas.set_magnifier_visible)
+        if self.magnifier_spinbox is not None and self.canvas is not None:
+            self.magnifier_spinbox.valueChanged.connect(self.canvas.set_magnifier_magnification)
         if self.action_prev_frame is not None:
             self.action_prev_frame.triggered.connect(self._go_prev_frame)
         if self.action_next_frame is not None:
@@ -904,6 +919,12 @@ class MainWindow(QMainWindow):
             title = f"{title} - {detail}"
         suffix = self._VIEW_MODE_TITLE_SUFFIX.get(self._view_mode, "")
         if suffix:
+            computing = (
+                self._view_mode != "original"
+                and self._current_frame_index in self._bkg_threads
+            )
+            if computing:
+                suffix = f"{suffix} 计算中..."
             title = f"{title} {suffix}"
         self.setWindowTitle(title)
 
@@ -1133,8 +1154,10 @@ class MainWindow(QMainWindow):
         self._bkg_threads[index] = thread
         self._bkg_workers[index] = worker
 
-        if index == self._current_frame_index and self.app_status_bar is not None:
-            self.app_status_bar.showMessage("正在计算背景...", 0)
+        if index == self._current_frame_index:
+            if self.app_status_bar is not None:
+                self.app_status_bar.showMessage("正在计算背景...", 0)
+            self._set_window_title(self._last_title_detail)
 
         thread.started.connect(worker.run)
         worker.bkg_ready.connect(self._handle_bkg_ready)
@@ -1171,12 +1194,10 @@ class MainWindow(QMainWindow):
     def _handle_bkg_thread_finished(self, index: int) -> None:
         self._bkg_threads.pop(index, None)
         self._bkg_workers.pop(index, None)
-        if (
-            index == self._current_frame_index
-            and not self._bkg_threads
-            and self.app_status_bar is not None
-        ):
-            self.app_status_bar.clearMessage()
+        if index == self._current_frame_index:
+            self._set_window_title(self._last_title_detail)
+            if not self._bkg_threads and self.app_status_bar is not None:
+                self.app_status_bar.clearMessage()
 
     def _cancel_bkg_workers(self, wait: bool = False) -> None:
         for thread in list(self._bkg_threads.values()):
@@ -1363,23 +1384,16 @@ class MainWindow(QMainWindow):
         "residual": "RESIDUAL",
     }
 
-    def _toggle_bkg_view(self) -> None:
-        """F1: toggle between original and background view."""
+    def _cycle_view_mode(self) -> None:
+        """TAB: cycle through original → background → residual → original."""
 
         if not self._frames:
             if self.app_status_bar is not None:
                 self.app_status_bar.showMessage("未加载图像", 2000)
             return
-        self._set_view_mode("background" if self._view_mode != "background" else "original")
-
-    def _toggle_residual_view(self) -> None:
-        """F2: toggle between original and residual view."""
-
-        if not self._frames:
-            if self.app_status_bar is not None:
-                self.app_status_bar.showMessage("未加载图像", 2000)
-            return
-        self._set_view_mode("residual" if self._view_mode != "residual" else "original")
+        order = self._VIEW_MODE_ORDER
+        idx = order.index(self._view_mode)
+        self._set_view_mode(order[(idx + 1) % len(order)])
 
     def _set_view_mode(self, mode: str) -> None:
         if mode == self._view_mode:
@@ -1387,10 +1401,6 @@ class MainWindow(QMainWindow):
         self._view_mode = mode
         if self.app_status_bar is not None:
             self.app_status_bar.set_view_mode_label(self._VIEW_MODE_BADGE.get(mode, ""))
-        if self.action_toggle_bkg is not None:
-            self.action_toggle_bkg.setChecked(mode == "background")
-        if self.action_toggle_residual is not None:
-            self.action_toggle_residual.setChecked(mode == "residual")
         self._set_window_title(self._last_title_detail)
         if self.app_status_bar is not None:
             self.app_status_bar.showMessage(
@@ -1629,10 +1639,6 @@ class MainWindow(QMainWindow):
         self._frame_residual_cache.clear()
         if self._view_mode != "original":
             self._view_mode = "original"
-            if self.action_toggle_bkg is not None:
-                self.action_toggle_bkg.setChecked(False)
-            if self.action_toggle_residual is not None:
-                self.action_toggle_residual.setChecked(False)
             if self.app_status_bar is not None:
                 self.app_status_bar.set_view_mode_label("")
         self._current_frame_index = 0
@@ -1955,8 +1961,6 @@ class MainWindow(QMainWindow):
             self.source_table_dock.show()
         if self.sep_panel_dock is not None:
             self.sep_panel_dock.show()
-        if self.histogram_dock is not None:
-            self.histogram_dock.show()
 
         h, w = data.data.shape[:2]
         self._start_sep_extract(ROISelection(x0=0, y0=0, width=w, height=h))
@@ -2002,6 +2006,8 @@ class MainWindow(QMainWindow):
 
         if self.histogram_dock is None:
             return
+        if not self.histogram_dock.isVisible():
+            return
 
         counts, min_value, max_value = self.fits_service.histogram()
         if counts.size == 0 or (counts.sum() == 0 and min_value == 0.0 and max_value == 0.0):
@@ -2018,6 +2024,12 @@ class MainWindow(QMainWindow):
             max_value,
             manual_limits=manual_limits,
         )
+
+    def _handle_histogram_visibility_changed(self, visible: bool) -> None:
+        """Compute the histogram lazily the first time the dock becomes visible."""
+
+        if visible:
+            self._refresh_histogram_view()
 
     def _handle_histogram_manual_range(self, low: float, high: float) -> None:
         """Switch the renderer into Manual mode using histogram-selected limits."""

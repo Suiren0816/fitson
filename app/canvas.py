@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QImage, QMouseEvent, QPen, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsEllipseItem, QGraphicsPixmapItem, QGraphicsScene, QGraphicsTextItem, QGraphicsView, QRubberBand
 
 from .compass_overlay import CompassOverlay
+from .magnifier_overlay import MagnifierOverlay, _make_crosshair_cursor
 from .contracts import CanvasImageState, CanvasOverlayState, ViewFeedbackState
 from ..core.contracts import ROISelection, ZoomState
 
@@ -68,9 +69,23 @@ class ImageCanvas(QGraphicsView):
         self.compass.raise_()
         self.compass.show()
 
+        self.magnifier = MagnifierOverlay(self)
+        self.magnifier.hide()
+
     def resizeEvent(self, event) -> None:  # noqa: ANN001
         super().resizeEvent(event)
         self.compass.move(self.width() - self.compass.width() - 12, 12)
+
+    def set_magnifier_visible(self, visible: bool) -> None:
+        self.magnifier.setVisible(visible)
+        if visible:
+            self.magnifier.raise_()
+            self.viewport().setCursor(_make_crosshair_cursor())
+        else:
+            self.viewport().unsetCursor()
+
+    def set_magnifier_magnification(self, value: int) -> None:
+        self.magnifier.set_magnification(value)
 
     def set_source_position_transform(self, transform) -> None:
         """Install a callable that maps catalog (x, y) into displayed coords."""
@@ -409,6 +424,15 @@ class ImageCanvas(QGraphicsView):
 
         scene_pos = self.mapToScene(event.pos())
         self.mouse_moved.emit(scene_pos.x(), scene_pos.y())
+
+        if self.magnifier.isVisible():
+            self.magnifier.update_position(
+                self.current_image,
+                scene_pos.x(),
+                scene_pos.y(),
+                event.pos(),
+                self.zoom_state.scale_factor,
+            )
 
         if self._drag_origin is not None:
             self._rubber_band.setGeometry(QRect(self._drag_origin, event.pos()).normalized())
